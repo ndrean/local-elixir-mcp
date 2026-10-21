@@ -454,17 +454,11 @@ defmodule StdioMcp.Docs.SectionChunker do
     do: [chunk]
 
   defp enforce_ceiling(%{text: text, path: path, terms: terms}, max_bytes) do
-    case TextChunker.split(text, chunk_size: max_bytes, chunk_overlap: 0, format: :markdown) do
-      pieces when is_list(pieces) ->
-        pieces
-        |> Enum.map(& &1.text)
-        |> balance_fences()
-        |> Enum.map(&%{text: String.trim(&1), path: path, terms: reparse_terms(&1, terms)})
-
-      other ->
-        Logger.warning("[SectionChunker] byte split failed (#{inspect(other)}) — keeping whole")
-        [%{text: text, path: path, terms: terms}]
-    end
+    text
+    |> TextChunker.split(chunk_size: max_bytes, chunk_overlap: 0, format: :markdown)
+    |> Enum.map(& &1.text)
+    |> balance_fences()
+    |> Enum.map(&%{text: String.trim(&1), path: path, terms: reparse_terms(&1, terms)})
   end
 
   # Each piece is renamed from its own text rather than inheriting the whole

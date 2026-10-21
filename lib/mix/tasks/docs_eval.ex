@@ -390,25 +390,8 @@ defmodule Mix.Tasks.Docs.Eval do
       judged?: Keyword.get(opts, :judged, false)
     }
 
-    unless config.candidates > 0 and config.pool > 0 and config.limit > 0 and
-             config.limit <= config.pool do
-      Mix.raise("--candidates and --pool must be positive; --limit must be between 1 and --pool")
-    end
-
-    if needs_vector?(config.modes) do
-      case EmbeddingConfig.check() do
-        :ok ->
-          :ok
-
-        :unset ->
-          Mix.raise(
-            "Embedding provenance is unverified. Run mix docs.reindex before vector evaluation."
-          )
-
-        {:mismatch, stored, current} ->
-          Mix.raise(EmbeddingConfig.mismatch_notice(stored, current))
-      end
-    end
+    validate_config!(config)
+    validate_embedding_model!(config.modes)
 
     {resolved, broken} = opts |> select_queries() |> resolve_ground_truth()
     {usable, mismatched} = reject_dimension_mismatch(resolved, config)
@@ -424,6 +407,30 @@ defmodule Mix.Tasks.Docs.Eval do
         usable
         |> Enum.map(&evaluate(&1, config))
         |> report(config)
+    end
+  end
+
+  defp validate_config!(config) do
+    unless config.candidates > 0 and config.pool > 0 and config.limit > 0 and
+             config.limit <= config.pool do
+      Mix.raise("--candidates and --pool must be positive; --limit must be between 1 and --pool")
+    end
+  end
+
+  defp validate_embedding_model!(modes) do
+    if needs_vector?(modes) do
+      case EmbeddingConfig.check() do
+        :ok ->
+          :ok
+
+        :unset ->
+          Mix.raise(
+            "Embedding provenance is unverified. Run mix docs.reindex before vector evaluation."
+          )
+
+        {:mismatch, stored, current} ->
+          Mix.raise(EmbeddingConfig.mismatch_notice(stored, current))
+      end
     end
   end
 

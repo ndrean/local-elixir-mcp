@@ -2,7 +2,12 @@ defmodule StdioMcp.SearchArchitectureTest do
   use ExUnit.Case, async: false
   @moduletag :capture_log
   import Ecto.Query
-  alias StdioMcp.{Repo, Knowledge, Memory, PackageDoc}
+  alias Ecto.Adapters.SQL
+  alias Ecto.Migrator
+  alias ExUnit.CaptureIO
+  alias Mix.Tasks.Docs.Eval
+  alias Mix.Tasks.Docs.Reindex
+  alias StdioMcp.{Knowledge, Memory, PackageDoc, Repo}
 
   alias StdioMcp.Docs.{
     Deadline,
@@ -14,6 +19,8 @@ defmodule StdioMcp.SearchArchitectureTest do
     Retrieval,
     Search
   }
+
+  alias StdioMcp.Tools.SearchDocs
 
   setup do
     Repo.delete_all(Knowledge)
@@ -52,7 +59,7 @@ defmodule StdioMcp.SearchArchitectureTest do
     started = System.monotonic_time(:millisecond)
 
     assert {:reply, response, %{}} =
-             StdioMcp.Tools.SearchDocs.execute(
+             SearchDocs.execute(
                %{query: "answer", package: "fixture", version: "1.0.0"},
                %{}
              )
@@ -70,7 +77,7 @@ defmodule StdioMcp.SearchArchitectureTest do
     insert_doc("answer")
 
     assert {:reply, response, %{}} =
-             StdioMcp.Tools.SearchDocs.execute(
+             SearchDocs.execute(
                %{query: "answer", package: "fixture", version: "1.0.0"},
                %{}
              )
@@ -122,16 +129,14 @@ defmodule StdioMcp.SearchArchitectureTest do
   test "tokenizer migration rebuilds existing rows and maintains triggers" do
     migration = 20_261_021_000_000
 
-    Ecto.Migrator.down(Repo, migration, StdioMcp.Repo.Migrations.VerifyVectorsAndIdentifiers,
+    Migrator.down(Repo, migration, StdioMcp.Repo.Migrations.VerifyVectorsAndIdentifiers,
       log: false
     )
 
     insert_doc("token/2 chunk_overlap")
     assert fts_count(~s("token")) == 1
 
-    Ecto.Migrator.up(Repo, migration, StdioMcp.Repo.Migrations.VerifyVectorsAndIdentifiers,
-      log: false
-    )
+    Migrator.up(Repo, migration, StdioMcp.Repo.Migrations.VerifyVectorsAndIdentifiers, log: false)
 
     assert fts_count(~s("token/2")) == 1
     assert fts_count(~s("token")) == 0
@@ -142,7 +147,7 @@ defmodule StdioMcp.SearchArchitectureTest do
   test "production preserves vector results when keyword retrieval fails" do
     insert_doc("semantic answer")
     EmbeddingConfig.record("new-model", 2)
-    Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE package_docs_fts RENAME TO unavailable_fts", [])
+    SQL.query!(Repo, "ALTER TABLE package_docs_fts RENAME TO unavailable_fts", [])
 
     try do
       result =
@@ -156,7 +161,7 @@ defmodule StdioMcp.SearchArchitectureTest do
       assert length(result.results) == 1
       assert Enum.any?(result.notices, &String.contains?(&1, "keyword retrieval failed"))
     after
-      Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE unavailable_fts RENAME TO package_docs_fts", [])
+      SQL.query!(Repo, "ALTER TABLE unavailable_fts RENAME TO package_docs_fts", [])
     end
   end
 
@@ -190,7 +195,7 @@ defmodule StdioMcp.SearchArchitectureTest do
     provider(fn _ -> {400, %{"error" => "embedding unavailable"}} end)
     old = insert_knowledge("preserved learning", "old-model")
     EmbeddingConfig.record("new-model", 2)
-    Mix.Tasks.Docs.Reindex.run(["--yes"])
+    Reindex.run(["--yes"])
 
     assert %{content: "preserved learning", embedding_model: "old-model"} =
              Repo.get!(Knowledge, old.id)
@@ -201,7 +206,7 @@ defmodule StdioMcp.SearchArchitectureTest do
   test "successful knowledge-only reindex updates vectors and provenance together" do
     provider(fn _ -> {200, %{"data" => [%{"embedding" => [0.0, 1.0]}]}} end)
     old = insert_knowledge("preserved learning", "old-model")
-    Mix.Tasks.Docs.Reindex.run(["--yes"])
+    Reindex.run(["--yes"])
     assert %{embedding: "[0.0,1.0]", embedding_model: "new-model"} = Repo.get!(Knowledge, old.id)
   end
 
@@ -209,7 +214,7 @@ defmodule StdioMcp.SearchArchitectureTest do
     provider(fn _ -> {200, %{"data" => [%{"embedding" => [0.0, 1.0]}, %{"embedding" => []}]}} end)
     one = insert_knowledge("one learning", "old-model")
     two = insert_knowledge("two learning", "old-model")
-    Mix.Tasks.Docs.Reindex.run(["--yes"])
+    Reindex.run(["--yes"])
     assert Repo.get!(Knowledge, one.id).embedding_model == "old-model"
     assert Repo.get!(Knowledge, two.id).embedding_model == "old-model"
   end
@@ -241,7 +246,7 @@ defmodule StdioMcp.SearchArchitectureTest do
 
   test "evaluation rejects same-dimension model mismatch before embedding queries" do
     EmbeddingConfig.record("old-model", 2)
-    assert_raise Mix.Error, ~r/old-model/, fn -> Mix.Tasks.Docs.Eval.run(["--modes", "rrf"]) end
+    assert_raise Mix.Error, ~r/old-model/, fn -> Eval.run(["--modes", "rrf"]) end
   end
 
   test "evaluation scores its ten-result output, excluding a hit at rank eleven" do
@@ -260,8 +265,8 @@ defmodule StdioMcp.SearchArchitectureTest do
     end
 
     output =
-      ExUnit.CaptureIO.capture_io(fn ->
-        Mix.Tasks.Docs.Eval.run(["--modes", "rrf", "--limit", "10"])
+      CaptureIO.capture_io(fn ->
+        Eval.run(["--modes", "rrf", "--limit", "10"])
       end)
 
     assert output =~ "fused pool 10"
@@ -270,8 +275,8 @@ defmodule StdioMcp.SearchArchitectureTest do
   end
 
   test "held-out query text is independent of the regression suite" do
-    regression = MapSet.new(Mix.Tasks.Docs.Eval.queries(), & &1.query)
-    holdout = MapSet.new(Mix.Tasks.Docs.Eval.queries("holdout"), & &1.query)
+    regression = MapSet.new(Eval.queries(), & &1.query)
+    holdout = MapSet.new(Eval.queries("holdout"), & &1.query)
     assert MapSet.size(holdout) == 6
     assert MapSet.disjoint?(regression, holdout)
   end
@@ -293,7 +298,7 @@ defmodule StdioMcp.SearchArchitectureTest do
       )
 
     vector =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "SELECT id FROM package_docs ORDER BY vec_distance_cosine(embedding, ?) LIMIT 15",
         ["[1.0,0.0]"]
@@ -329,7 +334,7 @@ defmodule StdioMcp.SearchArchitectureTest do
 
   defp fts_count(match) do
     [[count]] =
-      Ecto.Adapters.SQL.query!(
+      SQL.query!(
         Repo,
         "SELECT count(*) FROM package_docs_fts WHERE package_docs_fts MATCH ?",
         [match]

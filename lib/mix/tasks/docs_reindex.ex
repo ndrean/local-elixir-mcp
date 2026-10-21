@@ -238,13 +238,7 @@ defmodule Mix.Tasks.Docs.Reindex do
       {:ok, vectors} when length(vectors) == length(ids) ->
         Repo.transaction(fn ->
           Enum.zip(ids, vectors)
-          |> Enum.each(fn {id, vector} ->
-            unless is_list(vector) and vector != [], do: Repo.rollback(:invalid_vector)
-
-            Repo.update_all(from(k in Knowledge, where: k.id == ^id),
-              set: [embedding: Jason.encode!(vector), embedding_model: model]
-            )
-          end)
+          |> Enum.each(&update_knowledge_embedding(&1, model))
 
           length(ids)
         end)
@@ -258,6 +252,14 @@ defmodule Mix.Tasks.Docs.Reindex do
         {:error, reason}
     end
   end
+
+  defp update_knowledge_embedding({id, [_ | _] = vector}, model) do
+    Repo.update_all(from(k in Knowledge, where: k.id == ^id),
+      set: [embedding: Jason.encode!(vector), embedding_model: model]
+    )
+  end
+
+  defp update_knowledge_embedding(_row, _model), do: Repo.rollback(:invalid_vector)
 
   defp ingest(package, version, opts) do
     case TarballIngestion.ingest(package, version) do

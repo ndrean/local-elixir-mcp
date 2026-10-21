@@ -2,15 +2,15 @@ defmodule StdioMcp.Docs.Search do
   @moduledoc "Hybrid FTS5 + sqlite-vec vector search over package docs."
   import Ecto.Query
   import SqliteVec.Ecto.Query
-  alias StdioMcp.Docs.EmbeddingConfig
   alias StdioMcp.Docs.Deadline
-  alias StdioMcp.Docs.Retrieval
+  alias StdioMcp.Docs.EmbeddingConfig
   alias StdioMcp.Docs.HexPackage
   alias StdioMcp.Docs.IngestionJob
   alias StdioMcp.Docs.Lockfile
-  alias StdioMcp.Docs.RepairBudget
-  alias StdioMcp.Docs.TarballIngestion
   alias StdioMcp.Docs.QuerySanitizer
+  alias StdioMcp.Docs.RepairBudget
+  alias StdioMcp.Docs.Retrieval
+  alias StdioMcp.Docs.TarballIngestion
   alias StdioMcp.PackageDoc
   alias StdioMcp.Repo
   require Logger

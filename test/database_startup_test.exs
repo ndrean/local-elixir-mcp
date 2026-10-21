@@ -2,7 +2,10 @@ defmodule StdioMcp.DatabaseStartupTest do
   use ExUnit.Case, async: false
   @moduletag :capture_log
 
-  alias StdioMcp.{Repo, PackageDoc}
+  alias Ecto.Adapters.SQL
+  alias Ecto.Migrator
+  alias ExUnit.CaptureIO
+  alias StdioMcp.{PackageDoc, Repo}
   @migration 20_261_021_000_000
   @migration_module StdioMcp.Repo.Migrations.VerifyVectorsAndIdentifiers
 
@@ -29,7 +32,7 @@ defmodule StdioMcp.DatabaseStartupTest do
     refute File.exists?(database)
 
     output =
-      ExUnit.CaptureIO.capture_io(fn ->
+      CaptureIO.capture_io(fn ->
         assert {:ok, _} = Application.ensure_all_started(:stdio_mcp)
       end)
 
@@ -37,15 +40,15 @@ defmodule StdioMcp.DatabaseStartupTest do
     assert File.exists?(database)
     assert Repo.config()[:database] == database
     assert Repo.aggregate(PackageDoc, :count) == 0
-    assert @migration in Ecto.Migrator.migrated_versions(Repo)
+    assert @migration in Migrator.migrated_versions(Repo)
 
     assert %{rows: [[0]]} =
-             Ecto.Adapters.SQL.query!(Repo, "SELECT count(*) FROM package_docs_fts", [])
+             SQL.query!(Repo, "SELECT count(*) FROM package_docs_fts", [])
   end
 
   test "restarting applies pending migrations and preserves existing documents" do
     {:ok, _} = Application.ensure_all_started(:stdio_mcp)
-    :ok = Ecto.Migrator.down(Repo, @migration, @migration_module, log: false)
+    :ok = Migrator.down(Repo, @migration, @migration_module, log: false)
 
     doc =
       Repo.insert!(%PackageDoc{
@@ -55,15 +58,15 @@ defmodule StdioMcp.DatabaseStartupTest do
         content: "chunk_overlap"
       })
 
-    refute @migration in Ecto.Migrator.migrated_versions(Repo)
+    refute @migration in Migrator.migrated_versions(Repo)
 
     :ok = Application.stop(:stdio_mcp)
     assert {:ok, _} = Application.ensure_all_started(:stdio_mcp)
-    assert @migration in Ecto.Migrator.migrated_versions(Repo)
+    assert @migration in Migrator.migrated_versions(Repo)
     assert Repo.get!(PackageDoc, doc.id).content == "chunk_overlap"
 
     assert %{rows: [[1]]} =
-             Ecto.Adapters.SQL.query!(
+             SQL.query!(
                Repo,
                "SELECT count(*) FROM package_docs_fts WHERE package_docs_fts MATCH ?",
                [~s("chunk_overlap")]
@@ -77,8 +80,8 @@ defmodule StdioMcp.DatabaseStartupTest do
 
   test "a migration error prevents application startup" do
     {:ok, _} = Application.ensure_all_started(:stdio_mcp)
-    :ok = Ecto.Migrator.down(Repo, @migration, @migration_module, log: false)
-    Ecto.Adapters.SQL.query!(Repo, "ALTER TABLE knowledge ADD COLUMN embedding_model TEXT", [])
+    :ok = Migrator.down(Repo, @migration, @migration_module, log: false)
+    SQL.query!(Repo, "ALTER TABLE knowledge ADD COLUMN embedding_model TEXT", [])
     :ok = Application.stop(:stdio_mcp)
 
     assert {:error, {:stdio_mcp, reason}} = Application.ensure_all_started(:stdio_mcp)

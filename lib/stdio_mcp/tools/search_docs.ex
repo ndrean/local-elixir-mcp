@@ -22,8 +22,8 @@ defmodule StdioMcp.Tools.SearchDocs do
 
   alias Anubis.Server.Response
   alias StdioMcp.AI.Client
-  alias StdioMcp.Docs.Search
   alias StdioMcp.Docs.Deadline
+  alias StdioMcp.Docs.Search
 
   schema do
     field(:query, :string,

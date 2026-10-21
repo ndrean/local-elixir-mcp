@@ -20,8 +20,10 @@ defmodule Mix.Tasks.Docs.Judge do
 
   use Mix.Task
 
+  alias Mix.Tasks.Docs.Eval
   alias StdioMcp.AI.Client
   alias StdioMcp.Docs.Judgements
+  alias StdioMcp.Docs.Search
 
   @impl Mix.Task
   def run(argv) do
@@ -33,7 +35,7 @@ defmodule Mix.Tasks.Docs.Judge do
     existing = Judgements.load()
 
     entries =
-      Mix.Tasks.Docs.Eval.queries(Keyword.get(opts, :suite, "regression"))
+      Eval.queries(Keyword.get(opts, :suite, "regression"))
       |> Enum.map(fn q ->
         Mix.shell().info("  #{q.package}: #{q.query}")
         {q.query, q.kind, results(q, depth)}
@@ -62,7 +64,7 @@ defmodule Mix.Tasks.Docs.Judge do
       end
 
     {rows, _notices} =
-      StdioMcp.Docs.Search.search(q.query,
+      Search.search(q.query,
         package: q.package,
         version: Map.get(q, :version),
         embedding: embedding,
