@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hex Local"
+  short_description: "Version-aware Elixir docs and dependency research"
+  default_prompt: "Use $hex-local to find the documented API for the package versions in this Elixir project."

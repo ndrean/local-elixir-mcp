@@ -21,6 +21,26 @@ The `search_docs` searches against **HexDocs**. Ask a question about an Elixir p
 The "package ingestion" workflow is documented in *INGESTION.md*.
 The "tarball chunking and persistance" is documented in *TARBALL-INGESTION.md*.
 
+## Agent skill
+
+The shareable [Hex Local skill](skills/hex-local/SKILL.md) teaches an agent when
+and how to discover packages, search version-matched docs, investigate upstream
+issues, and use local debugging knowledge. It includes query examples, ingestion
+retry rules, and citation requirements.
+
+After connecting the MCP server below, copy the entire `skills/hex-local` folder
+to your client's skill directory. For Codex, the default personal directory is
+`~/.codex/skills/`; use your configured skills location if different. The skill
+supports automatic discovery or explicit invocation:
+
+```text
+Use $hex-local to check how this project's Req version handles retries.
+```
+
+The skill supplies agent instructions; it does not install or connect the MCP
+server. Its optional `agents/openai.yaml` supplies Codex display metadata. Other
+skill-compatible clients can use `SKILL.md` and its `references/` folder.
+
 ## Tech
 
 - `SQLite` + FTS5 + `sqlite-vec`
@@ -92,7 +112,8 @@ Any OpenAI-compatible `/embeddings` and `/chat/completions` endpoint works once 
 
 **3. In your project**:
 
-Copy two files `CLAUDE.md` — or `AGENTS.md` from the clone project into the repo you want to *use* the server from.
+Install the [Hex Local skill](skills/hex-local/SKILL.md), or copy `CLAUDE.md` or
+`AGENTS.md` from the clone into the repo where you want to use the server.
 This is what teaches the assistant that `package` is required, that a multi-package question is several calls, and how to read `notices`. Without it the tools work but are used badly.
 
 Copy the config file `.mcp.example.json` → `.mcp.json`.
