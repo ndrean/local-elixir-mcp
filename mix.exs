@@ -57,15 +57,15 @@ defmodule StdioMcp.MixProject do
   defp deps do
     [
       # {:anubis_mcp, path: "vendor/anubis_mcp"},
-      {:anubis_mcp, "~> 2.0.0"},
+      {:anubis_mcp, "~> 2.2.0"},
       {:ecto_sqlite3, "~> 0.17"},
       {:sqlite_vec, "~> 0.1"},
-      {:finch, "~> 0.18"},
-      {:req, "~> 0.5"},
-      {:text_chunker, "~> 0.6"},
+      {:finch, "~> 0.24"},
+      {:req, "~> 0.7.5"},
+      {:text_chunker, "~> 1.0"},
       {:jason, "~> 1.4"},
-      {:lazy_html, "~> 0.1.12"},
-      {:mdex, "~> 0.13.5"},
+      {:lazy_html, "~> 0.1.13"},
+      {:mdex, "~> 0.14.2"},
       {:dialyxir, "~> 1.4", runtime: false},
       {:credo, "~> 1.7", runtime: false}
     ]
