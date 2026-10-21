@@ -26,6 +26,12 @@ defmodule StdioMcp.Application do
 
     children =
       [
+        # Runs synchronously before any service can query the database. The
+        # migrator starts a temporary repo, applies pending migrations from the
+        # release's priv directory, then stops it. SQLite creates the file and
+        # parent directories when it connects. Failure aborts application startup.
+        {Ecto.Migrator,
+         repos: [StdioMcp.Repo], log: false, log_migrator_sql: false, log_migrations_sql: false},
         StdioMcp.Repo,
         {Finch, name: StdioMcp.Finch, pools: pools},
         # Two registries back StdioMcp.Docs.IngestionJob: the unique one names the

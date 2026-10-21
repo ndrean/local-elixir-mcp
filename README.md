@@ -89,16 +89,23 @@ SQLite needs no separate install — `ecto_sqlite3` bundles it — and neither d
 **1. In the clone**:
 
 ```sh
-# database setup
-mix setup
-
+mix deps.get
 MIX_ENV=prod mix release
 ```
 
 The database path is compiled in as `<the clone>/priv/mcp.db` — absolute, so it does not depend on where anything runs.
 
-⚠️ If you ever want to change the DATABASE_PATH, it needs to be set for the clone **AND** in your project (the *.mcp.json* file)
-> It does not fail loudly. The server starts, the tools list, and every query returns `no such table: package_docs` — currently wrapped in `isError: false`, so the session looks healthy while reading an empty database. If searches return nothing for packages you know are indexed, check the `database` field of `list_indexed_packages` before anything else.
+The application creates the SQLite database and its parent directories, then runs
+pending migrations **before** starting MCP tools. This works from source and in
+releases; no separate `mix setup` or migration command is required. A migration
+failure prevents startup instead of exposing tools against an incomplete schema.
+Migration logs stay off stdout so JSON-RPC remains clean.
+
+Set `DATABASE_PATH` in the client's MCP config to select another database. Startup
+prepares that path automatically. Set the same value when running maintenance
+commands so they operate on the server's index. An unexpected path can still
+select a different, valid database: check `list_indexed_packages.database` if docs
+you expected to find are absent. `mix setup` remains an optional developer shortcut.
 
 Rebuild with `mix release --overwrite` after changing code, then reconnect the client — a running BEAM keeps the modules it already loaded.
 
@@ -240,7 +247,7 @@ Everything else the server reads:
 | --- | --- | --- |
 | AI_API_KEY | — | Required. `AI_API_URL` points at any OpenAI-compatible provider. |
 | PROJECT_ROOT | unset | Required. The repo being edited — **not** this clone. |
-| DATABASE_PATH | `<this repo>/priv/mcp.db` | Leave it unset. The default is absolute and compiled in, so `mix setup` and the server agree by construction. Set it — in both places — only to give a project its own index. |
+| DATABASE_PATH | `<this repo>/priv/mcp.db` | The default is absolute and compiled in. Startup creates and migrates the selected database. Set it for a separate index, and use the same value for maintenance commands. |
 | `AI_EMBED_MODEL` | `mistral-embed` | Changing it invalidates the whole index; `mix docs.reindex` is the supported path. |
 | `AI_CHAT_MODEL_SMALL` / `_LARGE` | `mistral-small-latest` / `mistral-large-latest` | Structuring and curation for `remember`. |
 | `GITHUB_TOKEN` | unset | Raises the rate limit for `search_github_issues`. |
@@ -650,11 +657,11 @@ a shape, not a quote.
 ## Regression tests
 
 Run `mix test --no-start`. The test helper starts the app against a disposable
-SQLite database, migrates it, and uses a local fake embedding provider. It does
+SQLite database, verifies automatic startup migrations, and uses a local fake embedding provider. It does
 not use your index or API key.
 
-After upgrading an existing installation, run `mix ecto.migrate` in the same
-environment and with the same `DATABASE_PATH` as the server, then rebuild and
-reconnect. The migration rebuilds FTS without re-embedding docs. Legacy knowledge
+After upgrading an existing installation, rebuild and reconnect. Startup applies
+pending migrations to the configured `DATABASE_PATH` before serving requests.
+The tokenizer migration rebuilds FTS without re-embedding docs. Legacy knowledge
 vectors require `mix docs.reindex` before semantic recall can use them; their text
 remains searchable throughout.

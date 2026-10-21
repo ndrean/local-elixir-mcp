@@ -22,7 +22,6 @@ Application.put_env(
 Application.put_env(:stdio_mcp, :ai_api_key, nil)
 {:ok, _} = Application.ensure_all_started(:stdio_mcp)
 Logger.configure(level: :error)
-Ecto.Migrator.run(StdioMcp.Repo, "priv/repo/migrations", :up, all: true, log: false)
 
 ExUnit.after_suite(fn _ ->
   Application.stop(:stdio_mcp)
