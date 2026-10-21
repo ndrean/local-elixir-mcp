@@ -26,7 +26,8 @@ defmodule Mix.Tasks.Docs.Reindex do
   because `Docs.Search` re-ingests a missing package on the next search, so a
   failure costs one slow query later rather than a corrupt index forever.
 
-  Pass `--keep-failed` to override, accepting a mixed index.
+  Pass `--keep-failed` to retain failed docs only when the recorded model already
+  matches the configured model. It is refused during a model change.
 
   ## Usage
 
@@ -64,7 +65,11 @@ defmodule Mix.Tasks.Docs.Reindex do
 
     case targets do
       [] ->
-        Mix.shell().info("Nothing indexed — nothing to reindex.")
+        if Repo.exists?(Knowledge) and confirm?([], model, opts) do
+          report([], reindex_knowledge(model), model)
+        else
+          Mix.shell().info("No docs reindexed.")
+        end
 
       targets ->
         refuse_partial_model_change(opts, model)
@@ -81,6 +86,12 @@ defmodule Mix.Tasks.Docs.Reindex do
   # `--only` is for re-embedding a package that failed, under the model already in
   # force. Changing the model is all-or-nothing by construction.
   defp refuse_partial_model_change(opts, model) do
+    if Keyword.get(opts, :keep_failed, false) and EmbeddingConfig.check() != :ok do
+      Mix.raise(
+        "--keep-failed requires the recorded docs model to match the current model. Rebuild all docs to change models."
+      )
+    end
+
     with names when is_binary(names) <- Keyword.get(opts, :only),
          %{model: stored} when stored != model <- EmbeddingConfig.get() do
       Mix.raise("""
@@ -128,7 +139,7 @@ defmodule Mix.Tasks.Docs.Reindex do
 
     Mix.shell().info("""
 
-    Re-embedding #{length(targets)} package(s), #{total} docs, with #{model}.
+    Re-embedding #{length(targets)} package(s), #{total} docs and #{Repo.aggregate(Knowledge, :count)} knowledge entries, with #{model}.
     #{describe_current()}
     """)
 
@@ -172,9 +183,12 @@ defmodule Mix.Tasks.Docs.Reindex do
   # outright empties the index rather than leaving it usable, which is what
   # `--keep-failed` is for.
   defp reindex(targets, model, opts) do
-    :ok = EmbeddingConfig.clear()
-
-    unless Keyword.get(opts, :keep_failed, false), do: purge(targets)
+    {:ok, :ok} =
+      Repo.transaction(fn ->
+        unless EmbeddingConfig.check() == :ok, do: EmbeddingConfig.clear()
+        unless Keyword.get(opts, :keep_failed, false), do: purge(targets)
+        :ok
+      end)
 
     results =
       Enum.map(targets, fn {package, version, _count} ->
@@ -217,25 +231,30 @@ defmodule Mix.Tasks.Docs.Reindex do
     end
   end
 
-  defp embed_knowledge(rows, _model) do
+  defp embed_knowledge(rows, model) do
     {ids, contents} = Enum.unzip(rows)
 
     case Client.embed_batch(contents) do
-      {:ok, vectors} ->
-        Enum.zip(ids, vectors)
-        |> Enum.each(fn {id, vector} ->
-          Repo.update_all(from(k in Knowledge, where: k.id == ^id),
-            set: [embedding: Jason.encode!(vector)]
-          )
+      {:ok, vectors} when length(vectors) == length(ids) ->
+        Repo.transaction(fn ->
+          Enum.zip(ids, vectors)
+          |> Enum.each(fn {id, vector} ->
+            unless is_list(vector) and vector != [], do: Repo.rollback(:invalid_vector)
+
+            Repo.update_all(from(k in Knowledge, where: k.id == ^id),
+              set: [embedding: Jason.encode!(vector), embedding_model: model]
+            )
+          end)
+
+          length(ids)
         end)
 
-        {:ok, length(ids)}
+      {:ok, _vectors} ->
+        {:error, :vector_count_mismatch}
 
       {:error, reason} ->
-        # Left in place rather than dropped. A knowledge entry is user-authored
-        # and cannot be re-derived from anywhere, unlike a package, which is one
-        # download away — so a stale vector is the lesser loss, and the mismatch
-        # guard in `Memory` degrades the neighbour search instead of trusting it.
+        # Preserve user-authored text and old provenance. Memory filters vectors
+        # by each row's model, so a failed model change cannot enable stale ones.
         {:error, reason}
     end
   end
@@ -270,7 +289,7 @@ defmodule Mix.Tasks.Docs.Reindex do
 
     case failed do
       [] ->
-        Mix.shell().info("Index is single-model.\n")
+        Mix.shell().info("Docs reindex finished.\n")
 
       failed ->
         Enum.each(failed, fn {package, version, {:error, reason}} ->
@@ -295,6 +314,6 @@ defmodule Mix.Tasks.Docs.Reindex do
   defp describe_knowledge({:error, reason}),
     do:
       "\nWARNING: knowledge entries could NOT be re-embedded (#{inspect(reason)}) — " <>
-        "they keep vectors from the previous model, and `remember` will skip " <>
-        "neighbour search until `mix docs.reindex` succeeds."
+        "they keep their recorded provenance, and `remember` excludes incompatible " <>
+        "neighbours until `mix docs.reindex` succeeds."
 end

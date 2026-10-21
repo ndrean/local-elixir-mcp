@@ -19,7 +19,7 @@ The `search_docs` searches against **HexDocs**. Ask a question about an Elixir p
 > Why not just `grep deps/`? Because docs are generated from compiled modules, they show the API a macro produced — `grep` for `parse_options!/1` in `anubis_mcp` matches nothing, though it is called two lines below the `defschema` that makes it. And `grep` ranks nothing: it cannot connect "how do I avoid re-embedding" to the docs that say `chunk_overlap`.
 
 The "package ingestion" workflow is documented in *INGESTION.md*.
-The "tarball chunking and persistance" is documented in *TARBALL-INGESTION.md*.
+The tarball chunking and persistence workflow is documented in *TARBALL_INGESTION.md*.
 
 ## Agent skill
 
@@ -65,7 +65,7 @@ skill-compatible clients can use `SKILL.md` and its `references/` folder.
 
 - **HexDocs ingestion**: fetches a package's docs tarball from Hex, extracts it in memory, and indexes it with embeddings on demand. One HTTP request per package, never a page-by-page crawl.
 - **Version-aware**: with `PROJECT_ROOT` set, `latest` resolves to whatever your project's `mix.lock` pins — any age, pre-releases included — falling back to Hex's latest stable when nothing local pins the package. One version per package is kept, so results never interleave versions.
-- **Hybrid search**: FTS5 and `vec_distance_cosine` retrieve in parallel, reciprocal rank fusion merges them. ~30ms; recall@10 is 1.00 on the eval set, which is why nothing ranks the pool afterwards.
+- **Hybrid search**: FTS5 and exact cosine search retrieve scoped candidates sequentially; reciprocal rank fusion returns up to ten chunks. Retrieval modes and notices expose degraded searches.
 - **Curated knowledge memory**: submissions are embedded, compared to their nearest neighbours, and only then passed to a chat model that chooses `create`, `append`, `merge`, `replace`, `deprecate` or `discard`. The tool `recall` uses the same hybrid retrieval as `search_docs` — FTS5 and cosine fused by RRF — and degrades to keyword-only when no embedding is available, so it still works with no API key.
 - **GitHub issues** are queried live against the GitHub API and are *not* stored locally.
 
@@ -298,13 +298,13 @@ the answer must match your lockfile, or accept Hex latest stable.
 
 ## The embedding model is part of the index
 
-Every vector must come from the **same model**.
+Every cosine comparison must use vectors from the **same model**. Docs use one global model record; knowledge records model provenance per row.
 
 Two models are never comparable: different dimensions make sqlite-vec raise, and *identical* dimensions raise nothing at all while returning noise.
 
-`embedding_config` records the model and dimension actually used, read from the provider's response at ingest time. From that:
+`embedding_config` records the configured docs model name and the dimension read from returned vectors. From that:
 
-- **Ingestion refuses** to write vectors from a different model, before downloading anything.
+- **Ingestion refuses** to write docs vectors from a different model, before downloading and again in the replacement transaction.
 - **Search disables the vector arm** on a mismatch and returns a notice, instead of raising into a rescue and silently degrading to keyword-only.
 - **`list_indexed_packages`** reports `index_model`, `dims`, `query_model` and `matches_config?`.
 
@@ -319,7 +319,7 @@ So changing `AI_EMBED_MODEL` always costs a full re-embed of every package — t
 | `mix docs.drift` | Re-derives every package's chunks from its tarball and compares to what is stored. Answers "would a refresh change anything?" | One download per package, **no embeddings** |
 | `mix docs.reindex` | Re-downloads and re-embeds every indexed package under the current model. The supported way to change `AI_EMBED_MODEL`. | Full re-embed |
 | `mix docs.sources` | Backfills `source_url` on rows indexed before that column existed. | One download per package, no embeddings |
-| `mix docs.eval` | Retrieval benchmark over a fixed query set: `recall@5`, `MRR@10`, candidate recall, per arm. `--show N` prints the documents each query actually returned. | One embedding per query |
+| `mix docs.eval` | Retrieval benchmark over a fixed query set: `success@k`, `MRR@10`, `success@10`, per arm. `--show N` prints the documents each query actually returned. | One embedding per query |
 | `mix docs.judge` | Writes `priv/eval/judgements.md` — what the server returned, for a human to mark relevant or not. `mix docs.eval --judged` then scores precision rather than a single guessed target. | One embedding per query |
 
 The reflex after changing the chunker is to re-index everything. `mix docs.drift`
@@ -364,229 +364,107 @@ concurrently is a reliable way to collect 429s.
 
 ## Search engine
 
-A query runs two stages: two retrieval arms in parallel, then reciprocal rank
-fusion. Roughly 30ms end to end once the query embedding returns. Nothing ranks
-the pool after fusion — see below for why there is no reranker.
+A warm search embeds the query, retrieves package-scoped candidates sequentially
+from FTS5 and exact cosine search, then combines their ranks with reciprocal rank
+fusion (RRF). There is no reranker. SQLite scans the scoped stored vectors;
+this is exact search, not an approximate nearest-neighbour index.
 
 ```mermaid
 flowchart LR
-    Q([search_docs<br/>query + package])
-
-    Q -->|QuerySanitizer| FTS["FTS5 · BM25<br/>top 15 · 3ms"]
-    Q -->|embed, 1024-dim| VEC["sqlite-vec · cosine<br/>top 15 · 32ms"]
-
-    FTS --> RRF1{{"RRF k=60<br/>pool of 10"}}
-    VEC --> RRF1
-
-    RRF1 --> OUT([top 10 + notices])
-
-    classDef lex stroke:#b3600f,stroke-width:2px
-    classDef vecc stroke:#2b6d85,stroke-width:2px
-    class FTS lex
-    class VEC vecc
+    Q[query + package] --> E[query embedding: at most 2 seconds]
+    E --> I[ensure package version is indexed]
+    I --> F[FTS5: top 15]
+    I --> V[cosine: top 15]
+    F --> R[RRF: pool of 10]
+    V --> R
+    R --> H[hydrate in fused order]
+    H --> O[up to 10 chunks + retrieval_mode + notices]
 ```
 
-**The fusion is where the retrieval quality comes from.** It unions the two arms
-— a *union*, not an intersection, so a document the keyword arm never matched can
-still be returned. Measured on the 28-query set, that union is worth 0.07 of
-recall@10 over either arm alone, because the arms fail differently:
+Both retrieval arms apply package, version and examples filters **before** their
+limit. The FTS tokenizer preserves `_` and `/`; query expansion searches both
+whole identifiers and their component words. RRF adds `1 / (60 + rank)` per arm.
+Agreement between arms is rewarded, but an item found by only one can survive.
+The entire fused pool is returned to the assistant.
 
-```
-28 queries · corpus 11 packages / 3891 rows
+### Chunking and ingestion
 
-                       recall@10   MRR@10   candidate   ms
-FTS alone                 0.93      0.67       0.93       4
-vector alone              0.93      0.75       1.00      37
-RRF over both             1.00      0.75       1.00      28
-```
+Documentation is downloaded as an in-memory tarball. Markdown is split at
+headings, blocks and list items, with a byte splitter for oversized blocks.
+Heading breadcrumbs and option names distinguish sibling chunks. Navigation-only
+sections are excluded, and structural chunks do not overlap.
 
-The corpus fingerprint is printed with every run and is part of the result:
-FTS5's `bm25()` uses collection-wide statistics, so indexing *any* package shifts
-the keyword ranking of queries in every other one. A table built on a different
-corpus is not a valid comparison.
+Embedding batches run with bounded concurrency. Failed embedding aborts ingestion
+before replacement. Document rows, the embedding model record and FTS updates
+commit in one transaction. Existing docs remain intact if that transaction fails.
+Only one version per package is kept; shared databases can require re-ingestion
+when projects pin different versions of the same package.
 
-### Why there is no reranker
+Ingestion runs under a supervisor independently of the foreground request. A
+retry without `refresh: true` joins an ingestion already running for that version.
 
-A cross-encoder reranking stage was built, measured against the 28-query eval,
-and removed. The measurement is why.
+### Deadlines and degradation
 
-It never adds recall. RRF's candidate recall is already 1.00, so the stage can
-only reorder a pool that already contains the answer — and with `limit` at 10 and
-a pool of 10, it reorders exactly the set that is returned. It cannot add or
-remove a document. Measured end to end with `MiniLM-L4-v2`, top-5, 3891 rows:
-
-```
-slice          rrf                  rrf+rerank           rerank stage
-all (28)       0.96  MRR 0.75       0.96  MRR 0.78          +61ms
-concept (16)   0.94  MRR 0.63       0.94  MRR 0.62          +63ms
-symbol (12)    1.00  MRR 0.92       1.00  MRR 1.00          +63ms
-```
-
-`recall@5` is identical in every slice. The headline +0.03 MRR is an average over
-two opposite effects: symbol queries saturate at rank 1, conceptual queries gain
-nothing. So the stage polishes the class that already worked and leaves the weak
-class untouched — the opposite of the usual intuition about cross-encoders.
-
-That interacts badly with who reads the output. `search_docs` answers an LLM that
-reads every row before replying, so it ranks the payload itself; rank *within* the
-payload is close to worthless, while a document that never arrives cannot be
-recovered without a second round trip. The stage buys the column that does not
-matter here, and cannot move the one that does.
-
-Removing it also drops `bumblebee`, `exla` and `emlx` — about 860MB of
-dependencies, a native build, and a HuggingFace download plus model compile
-inside `Application.start/2`, which happened in the window an MCP client waits
-for the server to come up.
-
-The full sweep — eight models, the `sequence_length` truncation trap, the
-two-pass fusion design and the EMLX/EXLA measurements — is in `Notes.md`. The
-working code is preserved on the **`rerank`** branch, so restoring it is a
-checkout rather than a rewrite.
-
-### Query, step by step
-
-1. **Embed the query** — one API call, 1024 dimensions. The only network hop in a
-   warm query.
-2. **Ensure the package is indexed** — an unknown package triggers ingestion
-   inline (below); a known one costs one row lookup and no network.
-3. **Verify the embedding model** — if the index was built by a different model,
-   the vector is dropped and a notice says so. Vectors from two models are not
-   comparable: different widths make sqlite-vec raise, identical widths return
-   noise while raising nothing.
-4. **Scope** — package, version and the examples-only filter are applied to a
-   base query that *both* arms join, so the depth budget is never spent on other
-   packages.
-5. **Keyword arm** — `QuerySanitizer` quotes each term as an FTS5 phrase and
-   expands identifier-shaped terms into joined *and* split forms, so
-   `Boruta.Oauth.token/2` searches for the exact symbol and its parts. BM25 order,
-   top 15.
-6. **Vector arm** — cosine distance over the scoped rows, top 15. This is the arm
-   that bridges vocabulary gaps.
-7. **Fuse to ten** — each arm contributes `1/(60 + rank)`; an absent document
-   contributes nothing.
-8. **Hydrate in fused order** — `id IN (…)` returns storage order, so the ranking
-   is reimposed afterwards.
-9. **Return ten** — the whole pool. Cutting to five drops a document the arms
-   did find (recall 0.96 against 1.00), and the consumer reads every row anyway.
-
-### Ingestion
-
-Runs inline on the first search naming a package. One HTTP request for the docs,
-nothing written to disk.
-
-```mermaid
-flowchart LR
-    S([unindexed package]) --> HEX["hex.pm API<br/>resolve version"]
-    HEX --> GUARD{same embedding<br/>model?}
-    GUARD -->|no| REFUSE([refuse before download])
-    GUARD -->|yes| TAR["docs tarball<br/>1 request, in memory"]
-    TAR --> IDX["search_data<br/>or sidebar_items"]
-    IDX --> CONTENT["item doc → markdown section<br/>→ HTML tree walk"]
-    CONTENT --> CHUNK["SectionChunker<br/>MDEx AST, sliced by sourcepos"]
-    CHUNK --> EMB["embeddings<br/>200 per batch, 2 concurrent"]
-    EMB -->|any failure| ABORT([abort, nothing written])
-    EMB --> REC["record model + dims<br/>from the response"]
-    REC --> SAVE[("package_docs<br/>FTS triggers sync")]
-```
-
-Notable decisions:
-
-- **A stored version that differs from the current release is reported, never
-  silently replaced.** Auto-switching would let one unpinned search discard a
-  pinned version and force a full re-embed to get it back.
-- **The model guard runs before the download.** A mixed-model index cannot be
-  repaired by searching harder, and refusing costs one row read where proceeding
-  costs a tarball plus a full re-embed.
-- **Chunking is structural, not byte-based.** Boundaries fall on headings, then
-  blocks, then list items, with a byte splitter kept only as the floor for a
-  single oversized code block. Navigation sections — link lists made of the very
-  titles people search for — are dropped. Nothing overlaps: text is sliced from
-  the original markdown by source position, so what is stored is byte-identical
-  to what the package published.
-- **Embedding failure aborts before a single row is written.** Rows without
-  vectors produce an index that looks complete, passes every count check, and is
-  invisible to semantic search.
-
-### Why the depths are what they are
-
-Every number was measured against a fixed 26-query set (`mix docs.eval`). Three
-are counterintuitive.
-
-| Setting | Value | Why not more |
-| --- | --- | --- |
-| per-arm depth | 15 | Deeper is **worse**. RRF scores agreement, so at depth 40 an item ranked ~15 by both arms (`1/75 + 1/75`) outscores one ranked 3rd by a single arm (`1/63`), and the strong single-arm hit falls out of the pool. recall@5 drops 1.00 → 0.96 purely by retrieving more. |
-| fused pool | 10 | Candidate recall is already 1.00 at ten, and the whole pool is returned. Everything beyond it is a distractor with nothing to gain. |
-
-Two properties worth knowing before trusting a measurement:
-
-- **BM25 is corpus-global.** FTS5 uses collection-wide document frequency, so
-  indexing any package shifts the keyword ranking of queries in *other* packages
-  — measured, 53 new rows moved the keyword arm by 0.04 with nothing else
-  touched. Vector search is immune. A control table is only valid for the corpus
-  that produced it, which is why the report prints a corpus fingerprint.
-
-### When a stage fails
-
-Every stage degrades to the one beneath it. None is an error the caller handles.
+The `search_docs` tool sets a **27-second foreground budget**, leaving headroom
+under the documented 30-second transport ceiling. Query embedding gets at most
+2 seconds. The ingestion wait is capped by `INGEST_TIMEOUT_MS` and the remaining
+request budget, reserving time to return results or a progress notice. An outer
+deadline also bounds version lookup and database retrieval. A request queued
+behind another request may still encounter the transport's own timeout.
 
 | Condition | Behaviour |
 | --- | --- |
-| No API key, or the index was built by another model | Keyword search alone, with a notice naming the fix |
-| Cross-encoder not loaded, or its output unrecognised | Fused retrieval order, logged |
-| Keyword terms match nothing | The vector arm carries the fusion alone |
-| Both arms empty | No results — not an exception |
-| Ingestion outruns the request budget | A progress notice; the job keeps running and the next identical search collects it |
+| Query embedding fails, times out, or has no API key | Keyword retrieval with a notice |
+| Docs index model differs from query model | Keyword retrieval with a model-mismatch notice |
+| One retrieval arm raises | The other arm still runs; a notice names the failed arm |
+| Healthy arms find no matches | Empty results, with the attempted retrieval mode |
+| Ingestion exceeds its wait budget | Progress notice; ingestion continues |
+| Other foreground work exceeds the request budget | Deadline notice; any supervised ingestion continues |
 
-### Measured
+`retrieval_mode` is `hybrid`, `keyword`, `vector`, or `none`. It describes which
+arms ran successfully, not whether their results were relevant. Notices explain
+fallbacks. Direct Elixir callers can use `Search.search_detailed/2` for the same
+metadata; `Search.search/2` retains its `{results, notices}` interface.
 
-26 queries — 14 conceptual, 12 bare identifiers — over 10 packages and 2,755
-chunks. `cand` is the share of queries whose candidate pool contained the answer
-at all, and is the ceiling on everything downstream.
+Knowledge vectors carry their own `embedding_model` on each row. Legacy vectors
+with unknown provenance and vectors from other models are excluded from cosine
+retrieval and curation neighbours, while their text remains keyword-searchable.
+`mix docs.reindex` rebuilds them; failure leaves the old provenance unchanged.
 
-| Strategy | recall@5 | MRR@10 | cand | ms |
-| --- | --- | --- | --- | --- |
-| keyword only | 0.88 | 0.67 | 0.96 | 3 |
-| vector only | 0.88 | 0.76 | 1.00 | 32 |
-| intersection (previous design) | 0.92 | 0.79 | 0.96 | 31 |
-| fusion | 0.92 | 0.76 | 1.00 | 28 |
-| **fusion** (current) | **0.96** | **0.75** | **1.00** | **29** |
+### Evaluation
 
-Split by query shape the last row reads very differently: `1.00 / 0.92` on bare
-identifiers, `0.94 / 0.63` on conceptual questions. Conceptual ordering is the
-open problem, and a cross-encoder does not fix it — see "Why there is no
-reranker" above.
+```sh
+mix docs.eval --limit 10 --candidates 15 --pool 10 --verbose
+mix docs.judge --depth 10
+mix docs.eval --judged --limit 10
+mix docs.eval --suite holdout --limit 10
+```
 
-Reproduce with `AI_API_KEY=... mix docs.eval --verbose`. A change that does not
-move these numbers did not work, whatever it looked like in a spot check.
+The benchmark separates per-arm depth, fused-pool size and output cutoff. Defaults
+are 15, 10 and 5 respectively. The RRF pool therefore matches production, and
+`success@10` measures whether at least one expected chunk occurs in the first ten
+results. `success@k` is query success, not recall over all relevant documents.
+`MRR@10` describes first-hit ordering. Retrieval timings **exclude** query
+embedding, version lookup and ingestion; query embedding latency is reported
+separately. Vector evaluation refuses unverified or mismatched model provenance.
 
-### On the latency budget
+Human judgements are keyed on package, URL and exact chunk-content hash. Sibling
+chunks sharing a URL are judged separately. Unchanged chunks retain marks across
+re-ingestion; changed chunks and legacy page-level marks require review. Judged
+precision reports its coverage, since partially labelled results do not establish
+precision over the entire output.
 
-400ms is not instant, and that is fine — but not for the reason it first appears.
+The existing query set is a regression suite used repeatedly during tuning, not
+a held-out estimate of generalization. Corpus statistics affect BM25 across
+packages. Record the corpus, models and parameters with each result, and evaluate
+new queries before changing ranking. `--suite holdout` selects six new questions
+that were not used in the historical tuning; validate their expectations before
+treating their scores as evidence, and reserve fresh questions once tuning uses them. Historical measurements and reranker
+experiments are preserved in `Notes.md`; they are not current performance claims.
 
-A single assistant turn is seconds of token generation, so 400ms is noise against
-it. The mechanism that actually matters is not a gradient of patience but a
-**hard wall**: Anubis' session `GenServer.call` gives up at 30s and the client has
-its own tool timeout. Below the wall, latency costs nothing behavioural; above it
-the call dies. So the tail is what needs protecting, not the median — a 400ms
-median with a 26s cold-ingest tail is a worse risk profile than a 900ms median
-with a 3s tail. That is why `INGEST_TIMEOUT_MS` sits at 25s with a progress
-notice, rather than the pipeline simply being fast on average.
-
-What justifies spending latency is that cost compounds through **retries**, not
-through the call. If the tool answers, the agent moves on; if it does not, the
-agent reformulates — a second tool call plus a whole extra model turn. A 400ms
-call that answers is much cheaper than a 50ms call that forces a second turn.
-That is the argument that would justify a reranker, and it is why one was built.
-It failed on the premise rather than the arithmetic: the stage buys no recall at
-all, so there is no retry it avoids — only ordering, which this consumer discards.
-
-The operating rule, then, is close to the opposite of "keep it snappy": **spend
-the median freely up to the wall when it buys correctness, and protect the tail
-absolutely.** Concurrency is not a factor, and not for the reason you might
-expect: an Anubis session holds one request in flight and queues the rest, so
-parallel tool calls are serialised before they ever reach the search. What that
-does mean is that a slow request consumes the timeout budget of everything queued
-behind it — see "One call at a time" below.
+The earlier reranker did not improve the measured top-five success rate enough
+to justify its dependencies and startup cost. That supports leaving it out now;
+a wider candidate pool or a different corpus would warrant a new experiment.
 
 ## Worked examples
 
@@ -768,3 +646,15 @@ a shape, not a quote.
 |Embeddings|mistral-embed 0.1 /M|txt-embedding-3-small 0.02 /M|text-embedding-004 0.025 /M|
 |Fast extraction|mistral-small-4 0.15/0.60|GPT-5-nano 0.05,0.40 /M|gemini-2.5-flash-lite 0.10,0.40 /M|
 |Classification|mistral-large-3 0.50/1.50|GPT-5-mini 0.25,2.00 /M|gemini-3.1-flash-lite 0.25,1.50 /M|
+
+## Regression tests
+
+Run `mix test --no-start`. The test helper starts the app against a disposable
+SQLite database, migrates it, and uses a local fake embedding provider. It does
+not use your index or API key.
+
+After upgrading an existing installation, run `mix ecto.migrate` in the same
+environment and with the same `DATABASE_PATH` as the server, then rebuild and
+reconnect. The migration rebuilds FTS without re-embedding docs. Legacy knowledge
+vectors require `mix docs.reindex` before semantic recall can use them; their text
+remains searchable throughout.

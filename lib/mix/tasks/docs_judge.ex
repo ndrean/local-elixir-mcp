@@ -9,8 +9,8 @@ defmodule Mix.Tasks.Docs.Judge do
   the arms: a judgement should describe what the server answers, not what a
   harness approximates.
 
-  Existing marks are preserved on regeneration — they key on package + URL, which
-  survives re-chunking — so only genuinely new documents come back as `?`.
+  Existing chunk marks are preserved when package, URL and content are unchanged.
+  Changed chunks and legacy page-level marks come back as `?`.
 
   ## Usage
 
@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Docs.Judge do
 
   @impl Mix.Task
   def run(argv) do
-    {opts, _rest, _invalid} = OptionParser.parse(argv, strict: [depth: :integer])
+    {opts, _rest, _invalid} = OptionParser.parse(argv, strict: [depth: :integer, suite: :string])
     depth = Keyword.get(opts, :depth, 8)
 
     Mix.Task.run("app.start")
@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Docs.Judge do
     existing = Judgements.load()
 
     entries =
-      Mix.Tasks.Docs.Eval.queries()
+      Mix.Tasks.Docs.Eval.queries(Keyword.get(opts, :suite, "regression"))
       |> Enum.map(fn q ->
         Mix.shell().info("  #{q.package}: #{q.query}")
         {q.query, q.kind, results(q, depth)}
@@ -78,7 +78,8 @@ defmodule Mix.Tasks.Docs.Judge do
     Enum.reduce(entries, {0, 0}, fn {query, _kind, results}, {judged, total} ->
       marked =
         Enum.count(results, fn r ->
-          Judgements.verdict(existing, query, r.package, r.url) != :unjudged
+          Judgements.verdict(existing, query, r.package, Judgements.key(r.url, r.content)) !=
+            :unjudged
         end)
 
       {judged + marked, total + length(results)}

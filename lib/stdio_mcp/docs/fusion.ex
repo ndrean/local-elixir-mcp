@@ -17,14 +17,8 @@ defmodule StdioMcp.Docs.Fusion do
   top 10 — measured as recall@5 dropping from 1.00 to 0.96 purely by retrieving
   *more*. `Docs.Search` therefore takes 15 per arm, not 40.
 
-  ## What this is for
-
-  Not ranking. On this corpus RRF ranks slightly worse than the intersection it
-  replaces (MRR 0.77 against 0.78) while scoring identical recall — its value is
-  entirely that its candidate recall at depth 10 is 1.00 where the intersection's
-  is 0.92. It exists to guarantee the answer reaches a pool small enough for the
-  cross-encoder to sort well, and it is only worth having with that stage after
-  it.
+  The fused head is the result pool returned to the caller. Arm depth and pool
+  size are separate parameters: production uses 15 per arm and returns ten.
   """
 
   # 60 is the constant from the original RRF paper, where the job is fusing large

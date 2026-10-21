@@ -1846,3 +1846,235 @@ curl https://api.mistral.ai/v1/embeddings \
   "model": "codestral-embed"
 }'
 ```
+
+
+## Historical search architecture measurements (before October 2026 corrections)
+
+The following preserves earlier experiments. Their candidate-pool sizes, query
+sets and timing labels are historical and are not verified current guarantees.
+
+### Archived search engine discussion
+
+A query runs two stages: two retrieval arms in parallel, then reciprocal rank
+fusion. Roughly 30ms end to end once the query embedding returns. Nothing ranks
+the pool after fusion — see below for why there is no reranker.
+
+```mermaid
+flowchart LR
+    Q([search_docs<br/>query + package])
+
+    Q -->|QuerySanitizer| FTS["FTS5 · BM25<br/>top 15 · 3ms"]
+    Q -->|embed, 1024-dim| VEC["sqlite-vec · cosine<br/>top 15 · 32ms"]
+
+    FTS --> RRF1{{"RRF k=60<br/>pool of 10"}}
+    VEC --> RRF1
+
+    RRF1 --> OUT([top 10 + notices])
+
+    classDef lex stroke:#b3600f,stroke-width:2px
+    classDef vecc stroke:#2b6d85,stroke-width:2px
+    class FTS lex
+    class VEC vecc
+```
+
+**The fusion is where the retrieval quality comes from.** It unions the two arms
+— a *union*, not an intersection, so a document the keyword arm never matched can
+still be returned. Measured on the 28-query set, that union is worth 0.07 of
+recall@10 over either arm alone, because the arms fail differently:
+
+```
+28 queries · corpus 11 packages / 3891 rows
+
+                       recall@10   MRR@10   candidate   ms
+FTS alone                 0.93      0.67       0.93       4
+vector alone              0.93      0.75       1.00      37
+RRF over both             1.00      0.75       1.00      28
+```
+
+The corpus fingerprint is printed with every run and is part of the result:
+FTS5's `bm25()` uses collection-wide statistics, so indexing *any* package shifts
+the keyword ranking of queries in every other one. A table built on a different
+corpus is not a valid comparison.
+
+### Why there is no reranker
+
+A cross-encoder reranking stage was built, measured against the 28-query eval,
+and removed. The measurement is why.
+
+It never adds recall. RRF's candidate recall is already 1.00, so the stage can
+only reorder a pool that already contains the answer — and with `limit` at 10 and
+a pool of 10, it reorders exactly the set that is returned. It cannot add or
+remove a document. Measured end to end with `MiniLM-L4-v2`, top-5, 3891 rows:
+
+```
+slice          rrf                  rrf+rerank           rerank stage
+all (28)       0.96  MRR 0.75       0.96  MRR 0.78          +61ms
+concept (16)   0.94  MRR 0.63       0.94  MRR 0.62          +63ms
+symbol (12)    1.00  MRR 0.92       1.00  MRR 1.00          +63ms
+```
+
+`recall@5` is identical in every slice. The headline +0.03 MRR is an average over
+two opposite effects: symbol queries saturate at rank 1, conceptual queries gain
+nothing. So the stage polishes the class that already worked and leaves the weak
+class untouched — the opposite of the usual intuition about cross-encoders.
+
+That interacts badly with who reads the output. `search_docs` answers an LLM that
+reads every row before replying, so it ranks the payload itself; rank *within* the
+payload is close to worthless, while a document that never arrives cannot be
+recovered without a second round trip. The stage buys the column that does not
+matter here, and cannot move the one that does.
+
+Removing it also drops `bumblebee`, `exla` and `emlx` — about 860MB of
+dependencies, a native build, and a HuggingFace download plus model compile
+inside `Application.start/2`, which happened in the window an MCP client waits
+for the server to come up.
+
+The full sweep — eight models, the `sequence_length` truncation trap, the
+two-pass fusion design and the EMLX/EXLA measurements — is in `Notes.md`. The
+working code is preserved on the **`rerank`** branch, so restoring it is a
+checkout rather than a rewrite.
+
+### Query, step by step
+
+1. **Embed the query** — one API call, 1024 dimensions. The only network hop in a
+   warm query.
+2. **Ensure the package is indexed** — an unknown package triggers ingestion
+   inline (below); a known one costs one row lookup and no network.
+3. **Verify the embedding model** — if the index was built by a different model,
+   the vector is dropped and a notice says so. Vectors from two models are not
+   comparable: different widths make sqlite-vec raise, identical widths return
+   noise while raising nothing.
+4. **Scope** — package, version and the examples-only filter are applied to a
+   base query that *both* arms join, so the depth budget is never spent on other
+   packages.
+5. **Keyword arm** — `QuerySanitizer` quotes each term as an FTS5 phrase and
+   expands identifier-shaped terms into joined *and* split forms, so
+   `Boruta.Oauth.token/2` searches for the exact symbol and its parts. BM25 order,
+   top 15.
+6. **Vector arm** — cosine distance over the scoped rows, top 15. This is the arm
+   that bridges vocabulary gaps.
+7. **Fuse to ten** — each arm contributes `1/(60 + rank)`; an absent document
+   contributes nothing.
+8. **Hydrate in fused order** — `id IN (…)` returns storage order, so the ranking
+   is reimposed afterwards.
+9. **Return ten** — the whole pool. Cutting to five drops a document the arms
+   did find (recall 0.96 against 1.00), and the consumer reads every row anyway.
+
+### Ingestion
+
+Runs inline on the first search naming a package. One HTTP request for the docs,
+nothing written to disk.
+
+```mermaid
+flowchart LR
+    S([unindexed package]) --> HEX["hex.pm API<br/>resolve version"]
+    HEX --> GUARD{same embedding<br/>model?}
+    GUARD -->|no| REFUSE([refuse before download])
+    GUARD -->|yes| TAR["docs tarball<br/>1 request, in memory"]
+    TAR --> IDX["search_data<br/>or sidebar_items"]
+    IDX --> CONTENT["item doc → markdown section<br/>→ HTML tree walk"]
+    CONTENT --> CHUNK["SectionChunker<br/>MDEx AST, sliced by sourcepos"]
+    CHUNK --> EMB["embeddings<br/>200 per batch, 2 concurrent"]
+    EMB -->|any failure| ABORT([abort, nothing written])
+    EMB --> REC["record model + dims<br/>from the response"]
+    REC --> SAVE[("package_docs<br/>FTS triggers sync")]
+```
+
+Notable decisions:
+
+- **A stored version that differs from the current release is reported, never
+  silently replaced.** Auto-switching would let one unpinned search discard a
+  pinned version and force a full re-embed to get it back.
+- **The model guard runs before the download.** A mixed-model index cannot be
+  repaired by searching harder, and refusing costs one row read where proceeding
+  costs a tarball plus a full re-embed.
+- **Chunking is structural, not byte-based.** Boundaries fall on headings, then
+  blocks, then list items, with a byte splitter kept only as the floor for a
+  single oversized code block. Navigation sections — link lists made of the very
+  titles people search for — are dropped. Nothing overlaps: text is sliced from
+  the original markdown by source position, so what is stored is byte-identical
+  to what the package published.
+- **Embedding failure aborts before a single row is written.** Rows without
+  vectors produce an index that looks complete, passes every count check, and is
+  invisible to semantic search.
+
+### Why the depths are what they are
+
+Every number was measured against a fixed 26-query set (`mix docs.eval`). Three
+are counterintuitive.
+
+| Setting | Value | Why not more |
+| --- | --- | --- |
+| per-arm depth | 15 | Deeper is **worse**. RRF scores agreement, so at depth 40 an item ranked ~15 by both arms (`1/75 + 1/75`) outscores one ranked 3rd by a single arm (`1/63`), and the strong single-arm hit falls out of the pool. recall@5 drops 1.00 → 0.96 purely by retrieving more. |
+| fused pool | 10 | Candidate recall is already 1.00 at ten, and the whole pool is returned. Everything beyond it is a distractor with nothing to gain. |
+
+Two properties worth knowing before trusting a measurement:
+
+- **BM25 is corpus-global.** FTS5 uses collection-wide document frequency, so
+  indexing any package shifts the keyword ranking of queries in *other* packages
+  — measured, 53 new rows moved the keyword arm by 0.04 with nothing else
+  touched. Vector search is immune. A control table is only valid for the corpus
+  that produced it, which is why the report prints a corpus fingerprint.
+
+### When a stage fails
+
+Every stage degrades to the one beneath it. None is an error the caller handles.
+
+| Condition | Behaviour |
+| --- | --- |
+| No API key, or the index was built by another model | Keyword search alone, with a notice naming the fix |
+| Cross-encoder not loaded, or its output unrecognised | Fused retrieval order, logged |
+| Keyword terms match nothing | The vector arm carries the fusion alone |
+| Both arms empty | No results — not an exception |
+| Ingestion outruns the request budget | A progress notice; the job keeps running and the next identical search collects it |
+
+### Measured
+
+26 queries — 14 conceptual, 12 bare identifiers — over 10 packages and 2,755
+chunks. `cand` is the share of queries whose candidate pool contained the answer
+at all, and is the ceiling on everything downstream.
+
+| Strategy | recall@5 | MRR@10 | cand | ms |
+| --- | --- | --- | --- | --- |
+| keyword only | 0.88 | 0.67 | 0.96 | 3 |
+| vector only | 0.88 | 0.76 | 1.00 | 32 |
+| intersection (previous design) | 0.92 | 0.79 | 0.96 | 31 |
+| fusion | 0.92 | 0.76 | 1.00 | 28 |
+| **fusion** (current) | **0.96** | **0.75** | **1.00** | **29** |
+
+Split by query shape the last row reads very differently: `1.00 / 0.92` on bare
+identifiers, `0.94 / 0.63` on conceptual questions. Conceptual ordering is the
+open problem, and a cross-encoder does not fix it — see "Why there is no
+reranker" above.
+
+Reproduce with `AI_API_KEY=... mix docs.eval --verbose`. A change that does not
+move these numbers did not work, whatever it looked like in a spot check.
+
+### On the latency budget
+
+400ms is not instant, and that is fine — but not for the reason it first appears.
+
+A single assistant turn is seconds of token generation, so 400ms is noise against
+it. The mechanism that actually matters is not a gradient of patience but a
+**hard wall**: Anubis' session `GenServer.call` gives up at 30s and the client has
+its own tool timeout. Below the wall, latency costs nothing behavioural; above it
+the call dies. So the tail is what needs protecting, not the median — a 400ms
+median with a 26s cold-ingest tail is a worse risk profile than a 900ms median
+with a 3s tail. That is why `INGEST_TIMEOUT_MS` sits at 25s with a progress
+notice, rather than the pipeline simply being fast on average.
+
+What justifies spending latency is that cost compounds through **retries**, not
+through the call. If the tool answers, the agent moves on; if it does not, the
+agent reformulates — a second tool call plus a whole extra model turn. A 400ms
+call that answers is much cheaper than a 50ms call that forces a second turn.
+That is the argument that would justify a reranker, and it is why one was built.
+It failed on the premise rather than the arithmetic: the stage buys no recall at
+all, so there is no retry it avoids — only ordering, which this consumer discards.
+
+The operating rule, then, is close to the opposite of "keep it snappy": **spend
+the median freely up to the wall when it buys correctness, and protect the tail
+absolutely.** Concurrency is not a factor, and not for the reason you might
+expect: an Anubis session holds one request in flight and queues the rest, so
+parallel tool calls are serialised before they ever reach the search. What that
+does mean is that a slow request consumes the timeout budget of everything queued
+behind it — see "One call at a time" below.

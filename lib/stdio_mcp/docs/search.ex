@@ -3,7 +3,8 @@ defmodule StdioMcp.Docs.Search do
   import Ecto.Query
   import SqliteVec.Ecto.Query
   alias StdioMcp.Docs.EmbeddingConfig
-  alias StdioMcp.Docs.Fusion
+  alias StdioMcp.Docs.Deadline
+  alias StdioMcp.Docs.Retrieval
   alias StdioMcp.Docs.HexPackage
   alias StdioMcp.Docs.IngestionJob
   alias StdioMcp.Docs.Lockfile
@@ -69,19 +70,28 @@ defmodule StdioMcp.Docs.Search do
 
   @spec search(String.t(), keyword()) :: {[PackageDoc.t()], notices()}
   def search(query, opts \\ []) when is_binary(query) do
+    %{results: results, notices: notices} = search_detailed(query, opts)
+    {results, notices}
+  end
+
+  def search_detailed(query, opts \\ []) when is_binary(query) do
     case NimbleOptions.validate(opts, @search_schema) do
       {:ok, validated} ->
         case presence(validated[:package]) do
-          nil -> {[], [@no_package_notice]}
+          nil -> %{results: [], notices: [@no_package_notice], retrieval_mode: :none}
           package -> search_package(query, package, validated)
         end
 
       {:error, %NimbleOptions.ValidationError{} = err} ->
-        {[], ["Invalid search options: #{Exception.message(err)}"]}
+        %{
+          results: [],
+          notices: ["Invalid search options: #{Exception.message(err)}"],
+          retrieval_mode: :none
+        }
     end
   end
 
-  @spec search_package(String.t(), String.t(), keyword()) :: {[PackageDoc.t()], notices()}
+  @spec search_package(String.t(), String.t(), keyword()) :: map()
   defp search_package(query, package, opts) do
     # Normalised once, here, so `version` has a single meaning everywhere below.
     version = presence(opts[:version]) || "latest"
@@ -100,8 +110,8 @@ defmodule StdioMcp.Docs.Search do
 
     {embedding, config_notices} = verify_embedding_model(embedding)
 
-    {results, query_notices} = run_query(base_query, query, embedding, limit)
-    {results, notices ++ config_notices ++ query_notices}
+    {results, query_notices, mode} = run_query(base_query, query, embedding, limit)
+    %{results: results, notices: notices ++ config_notices ++ query_notices, retrieval_mode: mode}
   end
 
   # Dropping the embedding here routes the search down the FTS-only clause of
@@ -126,7 +136,13 @@ defmodule StdioMcp.Docs.Search do
 
         {nil, [EmbeddingConfig.mismatch_notice(stored, current)]}
 
-      _ok_or_unset ->
+      :unset ->
+        {nil,
+         [
+           "Docs embedding provenance is unverified; using keyword retrieval. Run `mix docs.reindex`."
+         ]}
+
+      :ok ->
         {embedding, []}
     end
   end
@@ -172,43 +188,35 @@ defmodule StdioMcp.Docs.Search do
   @pool_depth 10
 
   @spec run_query(Ecto.Query.t(), String.t(), list() | String.t() | nil, pos_integer()) ::
-          {[PackageDoc.t()], notices()}
+          {[PackageDoc.t()], notices(), atom()}
   defp run_query(base_query, query, vec, limit) when is_list(vec) or is_binary(vec) do
     vec_param = if is_list(vec), do: Jason.encode!(vec), else: vec
     match = QuerySanitizer.to_match(query)
 
-    arms = [fts_ids(base_query, match), vector_ids(base_query, vec_param)]
+    {ids, notices, mode} =
+      Retrieval.run(
+        fn -> fts_ids(base_query, match) end,
+        fn -> vector_ids(base_query, vec_param) end,
+        max(@pool_depth, limit)
+      )
 
-    case Fusion.rrf(arms, max(@pool_depth, limit)) do
-      # Neither arm returned anything for this package — not an error.
-      [] ->
-        {[], []}
-
-      # `hydrate/1` re-orders by the id list, so the fused RRF order survives the
-      # round trip to the database. Nothing ranks the pool after this point.
-      ids ->
-        {ids |> hydrate() |> Enum.take(limit), []}
-    end
-  rescue
-    e ->
-      Logger.warning("[Docs.Search] fused query failed: #{Exception.message(e)}")
-      run_query(base_query, query, nil, limit)
+    {ids |> hydrate() |> Enum.take(limit), notices, mode}
   end
 
-  # FTS5-only: no embedding available, or the vector arm was refused because the
-  # index was built by a different model.
   defp run_query(base_query, query, _vec, limit) do
-    results =
-      case QuerySanitizer.to_match(query) do
-        "" -> Repo.all(from(d in base_query, limit: ^limit))
-        match -> base_query |> fts_query(match, limit) |> Repo.all()
-      end
+    {ids, notices, mode} =
+      Retrieval.run(
+        fn ->
+          case QuerySanitizer.to_match(query) do
+            "" -> Repo.all(from(d in base_query, select: d.id, limit: ^limit))
+            match -> base_query |> fts_query(match, limit) |> select([d], d.id) |> Repo.all()
+          end
+        end,
+        nil,
+        limit
+      )
 
-    {results, []}
-  rescue
-    e ->
-      Logger.warning("[Docs.Search] FTS query failed: #{Exception.message(e)}")
-      {[], ["Search query failed: #{Exception.message(e)}"]}
+    {hydrate(ids), notices, mode}
   end
 
   # Both arms are scoped by joining `base_query`, which already carries the
@@ -583,7 +591,12 @@ defmodule StdioMcp.Docs.Search do
   @default_ingest_timeout 25_000
 
   defp ingest_timeout do
-    Application.get_env(:stdio_mcp, :ingest_timeout_ms, @default_ingest_timeout)
+    configured = Application.get_env(:stdio_mcp, :ingest_timeout_ms, @default_ingest_timeout)
+
+    case Deadline.remaining() do
+      :infinity -> configured
+      remaining -> min(configured, max(remaining - 500, 0))
+    end
   end
 
   # Ingestion reports success in two shapes: {:ok, count, version} and
@@ -600,6 +613,12 @@ defmodule StdioMcp.Docs.Search do
 
   defp handle_ingest_result({:ok, {:ok, _count}}, package) do
     {["Docs for '#{package}' were just indexed."], nil}
+  end
+
+  defp handle_ingest_result({:ok, {:error, :embedding_model_unverified}}, _package) do
+    {[
+       "Existing docs vectors have no verified model; ingestion was refused. Run `mix docs.reindex` to rebuild them."
+     ], nil}
   end
 
   defp handle_ingest_result({:ok, {:error, {:no_docs, ver}}}, package) do

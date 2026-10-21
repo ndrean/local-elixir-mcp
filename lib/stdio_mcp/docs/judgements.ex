@@ -23,13 +23,11 @@ defmodule StdioMcp.Docs.Judgements do
   returned and marks each result relevant or not. That is how retrieval is
   normally evaluated, and judging output is far cheaper than inventing targets.
 
-  ## The key is the document, not the chunk
+  ## Chunk identity
 
-  Row ids change on every re-ingest and content hashes change whenever chunking
-  changes, so neither can anchor a judgement that is meant to outlive them.
-  `{package, hexdocs_url}` survives both: it identifies the documentation section
-  a reader would open. Several chunks of one section share it, which is correct —
-  if the section answers the question, so does any part of it.
+  Judgements use package, URL and a hash of the exact chunk content. Unchanged
+  chunks retain their marks across re-ingestion; changed chunks require a new
+  judgement. Page-level legacy marks never apply to an arbitrary sibling chunk.
   """
 
   @path "priv/eval/judgements.md"
@@ -63,6 +61,12 @@ defmodule StdioMcp.Docs.Judgements do
     |> Map.get({package, url}, :unjudged)
   end
 
+  @doc "A chunk key, without changing its citable URL."
+  def key(url, content) do
+    hash = :crypto.hash(:sha256, to_string(content)) |> Base.encode16(case: :lower)
+    "#{url}	#{hash}"
+  end
+
   # A line-oriented format rather than a data structure, because the whole point
   # is that a person edits it: flipping `?` to `y` is one keystroke, and a diff
   # of the file reads as a list of decisions.
@@ -91,7 +95,13 @@ defmodule StdioMcp.Docs.Judgements do
 
   defp parse_entry(line) do
     [mark, rest] = String.split(line, " ", parts: 2)
-    [package, url | _] = String.split(String.trim(rest), "\t")
+    [package, url | tail] = String.split(String.trim(rest), "\t")
+
+    url =
+      case tail do
+        [hash | _] -> url <> "\t" <> hash
+        [] -> url
+      end
 
     verdict =
       case mark do
@@ -123,8 +133,8 @@ defmodule StdioMcp.Docs.Judgements do
     character matters; everything after the tab-separated package and URL is
     there for you to read.
 
-    A judgement is keyed on package + URL, so it survives re-chunking and
-    re-indexing. Regenerate with `mix docs.judge` — existing marks are kept.
+    A judgement is keyed on package + URL + chunk content hash. Unchanged chunks
+    retain their marks; changed chunks and legacy page-level marks need review.
 
     Score against these with `mix docs.eval --judged`.
     """
@@ -133,14 +143,10 @@ defmodule StdioMcp.Docs.Judgements do
       Enum.map_join(entries, "\n", fn {query, kind, results} ->
         rows =
           results
-          # Several chunks of one section share a URL — "Part 1" and "Part 2" of
-          # the same options list, for instance. The judgement is about the
-          # document, so collapse them: marking the same page twice is busywork
-          # and the two marks could disagree.
-          |> Enum.uniq_by(&{&1.package, &1.url})
+          |> Enum.uniq_by(&{&1.package, key(&1.url, &1.content)})
           |> Enum.map_join("\n\n", fn r ->
             mark =
-              case verdict(existing, query, r.package, r.url) do
+              case verdict(existing, query, r.package, key(r.url, r.content)) do
                 :yes -> "y"
                 :no -> "n"
                 :unjudged -> "?"
@@ -149,7 +155,7 @@ defmodule StdioMcp.Docs.Judgements do
             excerpt =
               r.content |> to_string() |> String.replace(~r/\s+/, " ") |> String.slice(0, 150)
 
-            "#{mark} #{r.package}\t#{r.url}\n  #{r.signature}\n  #{excerpt}"
+            "#{mark} #{r.package}\t#{key(r.url, r.content)}\n  #{r.signature}\n  #{excerpt}"
           end)
 
         "\n## #{query}\n<!-- #{kind} -->\n\n#{rows}\n"

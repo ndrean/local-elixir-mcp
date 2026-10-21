@@ -11,13 +11,14 @@ defmodule StdioMcp.Knowledge do
     field(:outdated, :boolean, default: false)
     field(:metadata, :map, default: %{})
     field(:embedding, :string)
+    field(:embedding_model, :string)
 
     timestamps()
   end
 
   def changeset(knowledge, attrs) do
     knowledge
-    |> cast(attrs, [:title, :kind, :content, :outdated, :metadata, :embedding])
+    |> cast(attrs, [:title, :kind, :content, :outdated, :metadata, :embedding, :embedding_model])
     |> validate_required([:title, :kind, :content])
     |> validate_inclusion(:kind, Vocabulary.kinds(),
       message: "must be one of: #{Enum.join(Vocabulary.kinds(), ", ")}"

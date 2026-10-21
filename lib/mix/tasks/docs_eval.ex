@@ -12,16 +12,9 @@ defmodule Mix.Tasks.Docs.Eval do
 
   ## Why this is a standalone instrument
 
-  It deliberately does **not** call `StdioMcp.Docs.Search.search/2`. The point is
-  to compare strategies against each other, including ones not wired into the
-  server yet, and an instrument that shares code with the thing it measures stops
-  being a control the moment that code changes. `rrf/2` here is also the reference
-  implementation to port into SQL: doing the fusion in Elixir keeps the harness
-  independent of the schema work.
-
-  The one thing it does share is `StdioMcp.Docs.QuerySanitizer`, and that is
-  deliberate: the `:fts` arm has to build byte-identical MATCH expressions to the
-  ones production builds, or it is measuring a different search.
+  The harness keeps separate retrieval queries so it can compare strategies,
+  while sharing QuerySanitizer and Fusion with production. Arm depth, fused pool
+  and output cutoff are independent. Integration tests check production results.
 
   ## Ground truth
 
@@ -38,15 +31,11 @@ defmodule Mix.Tasks.Docs.Eval do
 
   ## Reading the report
 
-    * `recall@5` — fraction of queries with a relevant chunk in the top 5. This is
-      the headline: 5 is roughly what fits in an agent's answer.
-    * `MRR@10` — mean reciprocal rank of the first relevant chunk. Moves when
-      ordering improves even if recall does not.
-    * `cand` — fraction of queries whose candidate pool contained a relevant
-      chunk. It is the ceiling on `recall@5`: no ordering change can promote what
-      retrieval never fetched, so if `cand` is 0.80, nothing downstream takes
-      `recall@5` past 0.80. Fix recall first.
-    * `ms` — median wall clock, including the embedding API call for every mode
+    * `success@k` — fraction of queries with at least one expected chunk in
+      the first k results. This is not recall over every relevant chunk.
+    * `MRR@10` — mean reciprocal rank of the first expected chunk.
+    * `success@10` — query success within the ten results production returns.
+    * `ms` — median wall clock, excluding the embedding API call for every mode
       that needs a vector (the embedding is fetched once per query and shared, so
       the modes are comparable to each other, not to a cold production call).
 
@@ -71,7 +60,8 @@ defmodule Mix.Tasks.Docs.Eval do
       arms (1/75 + 1/75) outscores one ranked 3 by a single arm (1/63), and the
       strong single-arm hit falls out of the fused top 10. Measured: arms 10 and
       15 both give 1.00 recall@5, arms 20 gives 0.96.
-    * `--limit` — cut-off for recall@k (default 5)
+    * `--pool` — fused candidate count, default 10, matching production
+    * `--limit` — cutoff for success@k (default 5)
     * `--verbose` — per-query rank table
     * `--judged` — score against `priv/eval/judgements.md` instead of the
       expectations: `P@k` (what fraction of a returned page is useful) and
@@ -89,6 +79,7 @@ defmodule Mix.Tasks.Docs.Eval do
   import SqliteVec.Ecto.Query
 
   alias StdioMcp.AI.Client
+  alias StdioMcp.Docs.EmbeddingConfig
   alias StdioMcp.Docs.Fusion
   alias StdioMcp.Docs.Judgements
   alias StdioMcp.Docs.QuerySanitizer
@@ -328,7 +319,44 @@ defmodule Mix.Tasks.Docs.Eval do
   The query set, exposed so `mix docs.judge` scores the same questions rather
   than keeping a second copy that drifts.
   """
-  def queries, do: @queries
+  @held_out_queries [
+    %{
+      kind: :concept,
+      package: "req",
+      query: "send JSON data and decode the response body",
+      expect: {:function, "Req.post/2"}
+    },
+    %{
+      kind: :concept,
+      package: "req",
+      query: "add default settings to an HTTP client used for several requests",
+      expect: {:function, "Req.new/1"}
+    },
+    %{
+      kind: :concept,
+      package: "ecto_sqlite3",
+      query: "configure a SQLite repository with a database file",
+      expect: {:content, "database"}
+    },
+    %{kind: :symbol, package: "req", query: "Req.get!/2", expect: {:function, "Req.get!/2"}},
+    %{
+      kind: :symbol,
+      package: "exqlite",
+      query: "Exqlite.Sqlite3.prepare/2",
+      expect: {:function, "Exqlite.Sqlite3.prepare/2"}
+    },
+    %{
+      kind: :symbol,
+      package: "text_chunker",
+      query: "TextChunker",
+      expect: {:module, "TextChunker"}
+    }
+  ]
+
+  def queries(suite \\ "regression")
+  def queries("regression"), do: @queries
+  def queries("holdout"), do: @held_out_queries
+  def queries(other), do: Mix.raise("--suite expects regression or holdout, got: #{other}")
 
   @all_modes [:fts, :vector, :hybrid, :rrf]
 
@@ -338,8 +366,10 @@ defmodule Mix.Tasks.Docs.Eval do
       OptionParser.parse(argv,
         strict: [
           modes: :string,
+          suite: :string,
           only: :string,
           candidates: :integer,
+          pool: :integer,
           limit: :integer,
           verbose: :boolean,
           show: :integer,
@@ -351,12 +381,34 @@ defmodule Mix.Tasks.Docs.Eval do
 
     config = %{
       modes: modes(opts),
+      suite: Keyword.get(opts, :suite, "regression"),
       candidates: Keyword.get(opts, :candidates, 15),
+      pool: Keyword.get(opts, :pool, 10),
       limit: Keyword.get(opts, :limit, 5),
       verbose?: Keyword.get(opts, :verbose, false),
       show: Keyword.get(opts, :show, 0),
       judged?: Keyword.get(opts, :judged, false)
     }
+
+    unless config.candidates > 0 and config.pool > 0 and config.limit > 0 and
+             config.limit <= config.pool do
+      Mix.raise("--candidates and --pool must be positive; --limit must be between 1 and --pool")
+    end
+
+    if needs_vector?(config.modes) do
+      case EmbeddingConfig.check() do
+        :ok ->
+          :ok
+
+        :unset ->
+          Mix.raise(
+            "Embedding provenance is unverified. Run mix docs.reindex before vector evaluation."
+          )
+
+        {:mismatch, stored, current} ->
+          Mix.raise(EmbeddingConfig.mismatch_notice(stored, current))
+      end
+    end
 
     {resolved, broken} = opts |> select_queries() |> resolve_ground_truth()
     {usable, mismatched} = reject_dimension_mismatch(resolved, config)
@@ -379,10 +431,17 @@ defmodule Mix.Tasks.Docs.Eval do
 
   defp select_queries(opts) do
     case Keyword.get(opts, :only) do
-      nil -> @queries
-      "concept" -> Enum.filter(@queries, &(&1.kind == :concept))
-      "symbol" -> Enum.filter(@queries, &(&1.kind == :symbol))
-      other -> Mix.raise("--only expects concept or symbol, got: #{other}")
+      nil ->
+        queries(Keyword.get(opts, :suite, "regression"))
+
+      "concept" ->
+        Enum.filter(queries(Keyword.get(opts, :suite, "regression")), &(&1.kind == :concept))
+
+      "symbol" ->
+        Enum.filter(queries(Keyword.get(opts, :suite, "regression")), &(&1.kind == :symbol))
+
+      other ->
+        Mix.raise("--only expects concept or symbol, got: #{other}")
     end
   end
 
@@ -527,15 +586,15 @@ defmodule Mix.Tasks.Docs.Eval do
   # would no longer be comparing retrieval — they would be comparing which one
   # got a slow HTTP round trip.
   defp evaluate(q, config) do
-    vec = if needs_vector?(config.modes), do: embed!(q.query)
+    {embedding_us, vec} = :timer.tc(fn -> if needs_vector?(config.modes), do: embed!(q.query) end)
 
     runs =
       Map.new(config.modes, fn mode ->
-        {us, ids} = :timer.tc(fn -> candidates(mode, q, vec, config.candidates) end)
+        {us, ids} = :timer.tc(fn -> candidates(mode, q, vec, config.candidates, config.pool) end)
         {mode, %{ids: ids, us: us}}
       end)
 
-    %{query: q, runs: runs}
+    %{query: q, runs: runs, embedding_us: embedding_us}
   end
 
   # `--modes fts` must not spend 25 embedding calls to measure an arm that has no
@@ -576,15 +635,15 @@ defmodule Mix.Tasks.Docs.Eval do
 
   # -- retrieval arms ----------------------------------------------------------
 
-  defp candidates(:fts, q, _vec, n), do: fts_ids(q.package, q.query, n)
-  defp candidates(:vector, q, vec, n), do: vector_ids(q.package, vec, n)
+  defp candidates(:fts, q, _vec, n, _pool), do: fts_ids(q.package, q.query, n)
+  defp candidates(:vector, q, vec, n, _pool), do: vector_ids(q.package, vec, n)
 
   # Production behaviour as of StdioMcp.Docs.Search.hybrid_query/4: vector
   # ordering *intersected* with the FTS candidate set, falling back to
   # vector-only when the intersection is empty. Kept as the baseline the new
   # pipeline has to beat — an intersection cannot surface a chunk the keyword arm
   # never matched, which is precisely what RRF is meant to fix.
-  defp candidates(:hybrid, q, vec, n) do
+  defp candidates(:hybrid, q, vec, n, _pool) do
     fts = MapSet.new(fts_ids(q.package, q.query, n))
 
     case Enum.filter(vector_ids(q.package, vec, n), &MapSet.member?(fts, &1)) do
@@ -593,8 +652,8 @@ defmodule Mix.Tasks.Docs.Eval do
     end
   end
 
-  defp candidates(:rrf, q, vec, n) do
-    rrf([fts_ids(q.package, q.query, n), vector_ids(q.package, vec, n)], n)
+  defp candidates(:rrf, q, vec, n, pool) do
+    rrf([fts_ids(q.package, q.query, n), vector_ids(q.package, vec, n)], pool)
   end
 
   defp fts_ids(package, query, n) do
@@ -656,9 +715,16 @@ defmodule Mix.Tasks.Docs.Eval do
 
     Mix.shell().info("""
 
-    #{length(evaluations)} queries · top-#{config.limit} · #{config.candidates} per arm
+    #{config.suite}: #{length(evaluations)} queries · top-#{config.limit} · #{config.candidates} per arm · fused pool #{config.pool}
     corpus #{corpus_fingerprint()}
+    query model #{Client.embed_model()}
     """)
+
+    embedding_ms = evaluations |> Enum.map(&div(&1.embedding_us, 1000)) |> median()
+
+    Mix.shell().info(
+      "Retrieval ms excludes query embedding (median #{embedding_ms}ms), version checks and ingestion."
+    )
 
     section("all", evaluations, modes, config)
 
@@ -723,13 +789,22 @@ defmodule Mix.Tasks.Docs.Eval do
         )
       )
 
-    "#{packages} packages / #{rows} rows"
+    content =
+      Repo.all(
+        from(d in PackageDoc,
+          select: {d.package, d.version, d.hexdocs_url, d.signature, d.content, d.embedding}
+        )
+      )
+      |> Enum.sort()
+
+    hash = :crypto.hash(:sha256, :erlang.term_to_binary(content)) |> Base.encode16(case: :lower)
+    "#{packages} packages / #{rows} rows / sha256 #{hash}"
   end
 
   defp section(label, evaluations, modes, config) do
     Mix.shell().info(
       String.pad_trailing(label, 14) <>
-        "recall@#{config.limit}   MRR@#{@mrr_depth}      cand        ms"
+        "success@#{config.limit}  MRR@#{@mrr_depth}  success@10        ms"
     )
 
     Enum.each(modes, fn mode ->
@@ -753,7 +828,7 @@ defmodule Mix.Tasks.Docs.Eval do
     %{
       recall: mean(runs, fn {rel, run} -> bool(hit?(run.ids, rel, config.limit)) end),
       mrr: mean(runs, fn {rel, run} -> reciprocal_rank(run.ids, rel) end),
-      candidate_recall: mean(runs, fn {rel, run} -> bool(hit?(run.ids, rel, :all)) end),
+      candidate_recall: mean(runs, fn {rel, run} -> bool(hit?(run.ids, rel, 10)) end),
       median_ms: runs |> Enum.map(fn {_rel, run} -> div(run.us, 1000) end) |> median()
     }
   end
@@ -814,7 +889,12 @@ defmodule Mix.Tasks.Docs.Eval do
           verdicts =
             Enum.map(
               docs,
-              &Judgements.verdict(judgements, e.query.query, &1.package, &1.hexdocs_url)
+              &Judgements.verdict(
+                judgements,
+                e.query.query,
+                &1.package,
+                Judgements.key(&1.hexdocs_url, &1.content)
+              )
             )
 
           %{kind: e.query.kind, verdicts: verdicts}

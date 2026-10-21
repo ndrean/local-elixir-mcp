@@ -5,7 +5,6 @@ defmodule StdioMcp.Memory do
   import Ecto.Query, only: [from: 2]
   import SqliteVec.Ecto.Query
   alias StdioMcp.AI.Client
-  alias StdioMcp.Docs.EmbeddingConfig
   alias StdioMcp.Docs.Fusion
   alias StdioMcp.Knowledge
   alias StdioMcp.Knowledge.Decision
@@ -285,11 +284,18 @@ defmodule StdioMcp.Memory do
   end
 
   defp embedding_usable do
-    case EmbeddingConfig.check() do
-      :ok -> :ok
-      :unset -> :ok
-      {:mismatch, _stored, _current} -> :mismatch
-    end
+    model = Client.embed_model()
+
+    if Repo.exists?(
+         from(k in Knowledge, where: k.embedding_model == ^model and not is_nil(k.embedding))
+       ),
+       do: :ok,
+       else: :mismatch
+  end
+
+  defp compatible_vectors(query) do
+    model = Client.embed_model()
+    from(k in query, where: k.embedding_model == ^model and not is_nil(k.embedding))
   end
 
   defp hybrid_knowledge(base_query, query_text, embedding, limit) do
@@ -334,7 +340,7 @@ defmodule StdioMcp.Memory do
   defp vector_ids(base_query, embedding, depth) do
     query_json = Jason.encode!(embedding)
 
-    from(k in base_query,
+    from(k in compatible_vectors(base_query),
       where: not is_nil(k.embedding),
       order_by: [asc: vec_distance_cosine(k.embedding, ^query_json)],
       limit: ^depth,
@@ -371,7 +377,7 @@ defmodule StdioMcp.Memory do
         skip_neighbors()
 
       :ok ->
-        base = from(k in Knowledge, where: k.outdated == false and not is_nil(k.embedding))
+        base = compatible_vectors(from(k in Knowledge, where: k.outdated == false))
         depth = arm_depth(limit)
 
         [fts_ids(base, text, depth), vector_ids(base, embedding, depth)]
@@ -387,12 +393,9 @@ defmodule StdioMcp.Memory do
   # distance computed across two embedding models can merge into the *wrong* entry
   # or discard a real learning, and neither is recoverable.
   defp skip_neighbors do
-    %{model: stored} = EmbeddingConfig.get()
-
     Logger.warning(
-      "[Memory] knowledge entries were embedded with '#{stored}' but the server is " <>
-        "configured for '#{Client.embed_model()}' — skipping neighbour search, so this " <>
-        "entry is stored without deduplication. Run `mix docs.reindex` to re-embed."
+      "[Memory] no knowledge vectors verified for '#{Client.embed_model()}' — " <>
+        "skipping neighbour search. Run `mix docs.reindex` to re-embed legacy entries."
     )
 
     []
@@ -404,7 +407,7 @@ defmodule StdioMcp.Memory do
     query_json = Jason.encode!(embedding)
 
     index =
-      from(k in Knowledge,
+      from(k in compatible_vectors(Knowledge),
         where: k.id in ^ids,
         select: {k, vec_distance_cosine(k.embedding, ^query_json)}
       )
@@ -691,12 +694,23 @@ defmodule StdioMcp.Memory do
   defp fetch_or_structure_text(decision), do: structure_text(decision.content)
 
   defp execute_decision(%{action: "create"}, structured, embedding) do
-    {:ok, entry} = save(Map.put(structured, :embedding, Jason.encode!(embedding)))
+    {:ok, entry} =
+      save(
+        Map.merge(structured, %{
+          embedding: Jason.encode!(embedding),
+          embedding_model: Client.embed_model()
+        })
+      )
+
     %{action: "created", id: entry.id, title: entry.title}
   end
 
   defp execute_decision(%{action: "update", id: id}, structured, embedding) do
-    attrs = Map.put(structured, :embedding, Jason.encode!(embedding))
+    attrs =
+      Map.merge(structured, %{
+        embedding: Jason.encode!(embedding),
+        embedding_model: Client.embed_model()
+      })
 
     case update(id, attrs) do
       {:ok, entry} ->

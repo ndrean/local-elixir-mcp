@@ -845,7 +845,6 @@ defmodule StdioMcp.Docs.TarballIngestion do
     |> case do
       {:ok, acc, _done} ->
         embedded = acc |> Enum.reverse() |> Enum.concat()
-        record_embedding_config(embedded)
         {:ok, embedded}
 
       {:error, reason} ->
@@ -869,10 +868,7 @@ defmodule StdioMcp.Docs.TarballIngestion do
         :ok
 
       {:error, reason} ->
-        # The vectors are still good; only the record failed. Searches fall back
-        # to treating the index as unverified rather than refusing it.
-        Logger.warning("[TarballIngestion] could not record embedding config: #{inspect(reason)}")
-        :ok
+        Repo.rollback({:embedding_config_failed, reason})
     end
   end
 
@@ -1011,6 +1007,12 @@ defmodule StdioMcp.Docs.TarballIngestion do
   # `package_docs_ad` fires on delete, `package_docs_ai` on insert.
   defp save(docs, package, version) do
     Repo.transaction(fn ->
+      case EmbeddingConfig.allow_ingest(Client.embed_model()) do
+        :ok -> :ok
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
+      record_embedding_config(docs)
       Repo.delete_all(from(d in PackageDoc, where: d.package == ^package))
 
       now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)

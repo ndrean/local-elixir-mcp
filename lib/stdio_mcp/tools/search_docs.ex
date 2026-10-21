@@ -23,6 +23,7 @@ defmodule StdioMcp.Tools.SearchDocs do
   alias Anubis.Server.Response
   alias StdioMcp.AI.Client
   alias StdioMcp.Docs.Search
+  alias StdioMcp.Docs.Deadline
 
   schema do
     field(:query, :string,
@@ -65,10 +66,15 @@ defmodule StdioMcp.Tools.SearchDocs do
     # impossible. It is its own flag now.
     refresh = params[:refresh] || false
 
-    vector =
-      case Client.embed(query) do
-        {:ok, emb} -> Jason.encode!(emb)
-        _ -> nil
+    deadline = Deadline.after_ms(27_000)
+
+    {vector, embedding_notices} =
+      case Deadline.run(min(deadline, Deadline.after_ms(2_000)), fn -> Client.embed(query) end) do
+        {:ok, {:ok, emb}} ->
+          {Jason.encode!(emb), []}
+
+        failure ->
+          {nil, ["Query embedding unavailable (#{inspect(failure)}); using keyword retrieval."]}
       end
 
     opts = [
@@ -93,7 +99,23 @@ defmodule StdioMcp.Tools.SearchDocs do
       limit: 10
     ]
 
-    {results, notices} = Search.search(query, opts)
+    %{results: results, notices: notices, retrieval_mode: mode} =
+      case Deadline.run(deadline, fn -> Search.search_detailed(query, opts) end) do
+        {:ok, result} ->
+          result
+
+        {:error, reason} ->
+          %{
+            results: [],
+            retrieval_mode: :none,
+            notices: [
+              "Search did not finish within its request budget (#{inspect(reason)}). " <>
+                "Any background ingestion continues; retry without refresh to collect it."
+            ]
+          }
+      end
+
+    notices = embedding_notices ++ notices
 
     formatted =
       Enum.map(results, fn r ->
@@ -111,8 +133,7 @@ defmodule StdioMcp.Tools.SearchDocs do
         }
       end)
 
-    payload =
-      if notices == [], do: %{results: formatted}, else: %{results: formatted, notices: notices}
+    payload = %{results: formatted, notices: notices, retrieval_mode: mode}
 
     {:reply, Response.text(Response.tool(), Jason.encode!(payload)), frame}
   rescue

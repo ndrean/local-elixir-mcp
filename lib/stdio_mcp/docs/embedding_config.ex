@@ -42,9 +42,9 @@ defmodule StdioMcp.Docs.EmbeddingConfig do
   end
 
   @typedoc """
-  `:unset` is an index built before this table existed. It is not an error and
-  must not block a search — there is no way to know what produced those vectors,
-  so the only honest thing is to proceed and say the index is unverified.
+  `:unset` means vector provenance is unknown. Search uses keyword retrieval
+  until the docs index is rebuilt; ingestion may adopt a model only if no old
+  docs vectors remain.
   """
   @type status :: :ok | :unset | {:mismatch, String.t(), String.t()}
 
@@ -116,12 +116,23 @@ defmodule StdioMcp.Docs.EmbeddingConfig do
   set. `mix docs.reindex` is the supported way to change models.
   """
   @spec allow_ingest(String.t()) ::
-          :ok | {:error, {:embedding_model_mismatch, String.t(), String.t()}}
+          :ok
+          | {:error,
+             :embedding_model_unverified | {:embedding_model_mismatch, String.t(), String.t()}}
   def allow_ingest(current) do
     case check(get(), current) do
-      :ok -> :ok
-      :unset -> :ok
-      {:mismatch, stored, current} -> {:error, {:embedding_model_mismatch, stored, current}}
+      :ok ->
+        :ok
+
+      :unset ->
+        if Repo.exists?(from(d in StdioMcp.PackageDoc, where: not is_nil(d.embedding))) do
+          {:error, :embedding_model_unverified}
+        else
+          :ok
+        end
+
+      {:mismatch, stored, current} ->
+        {:error, {:embedding_model_mismatch, stored, current}}
     end
   end
 
