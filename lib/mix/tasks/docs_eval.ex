@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Docs.Eval do
   ## Why this is a standalone instrument
 
   The harness keeps separate retrieval queries so it can compare strategies,
-  while sharing QuerySanitizer and Fusion with production. Arm depth, fused pool
+  while sharing QuerySanitizer, Fusion and ResultRanking with production. Arm depth, fused pool
   and output cutoff are independent. Integration tests check production results.
 
   ## Ground truth
@@ -83,6 +83,7 @@ defmodule Mix.Tasks.Docs.Eval do
   alias StdioMcp.Docs.Fusion
   alias StdioMcp.Docs.Judgements
   alias StdioMcp.Docs.QuerySanitizer
+  alias StdioMcp.Docs.ResultRanking
   alias StdioMcp.PackageDoc
   alias StdioMcp.Repo
 
@@ -660,7 +661,13 @@ defmodule Mix.Tasks.Docs.Eval do
   end
 
   defp candidates(:rrf, q, vec, n, pool) do
-    rrf([fts_ids(q.package, q.query, n), vector_ids(q.package, vec, n)], pool)
+    ranked_lists = [fts_ids(q.package, q.query, n), vector_ids(q.package, vec, n)]
+
+    ranked_lists
+    |> Fusion.rrf(n * 2)
+    |> hydrate()
+    |> ResultRanking.rank(ranked_lists, q.query, pool)
+    |> Enum.map(& &1.id)
   end
 
   defp fts_ids(package, query, n) do
@@ -693,13 +700,6 @@ defmodule Mix.Tasks.Docs.Eval do
     )
     |> Repo.all()
   end
-
-  # Fusion comes from the module `Docs.Search` uses. The arms stay local, because
-  # the harness has to compare strategies the server does not implement —
-  # `hybrid` is the intersection RRF replaced, kept as the control — but
-  # reimplementing the stage that *is* production would let the `rrf` row drift
-  # away from describing the server.
-  defp rrf(ranked_lists, n), do: Fusion.rrf(ranked_lists, n)
 
   defp sanitize_fts(query), do: QuerySanitizer.to_match(query)
 

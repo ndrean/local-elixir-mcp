@@ -1,0 +1,8 @@
+.env
+priv/*.db
+priv/mcp-*.*
+priv/*.db-*
+deps/
+_build/
+.elixir_ls
+scripts/

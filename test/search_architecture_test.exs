@@ -312,6 +312,28 @@ defmodule StdioMcp.SearchArchitectureTest do
     assert length(docs) == 10
   end
 
+  test "production demotes stubs before the cutoff in hybrid and keyword searches" do
+    for _ <- 1..15, do: insert_doc("# `schema`")
+    guide = insert_doc("Define a tool schema with required fields and an execute callback.")
+    EmbeddingConfig.record("new-model", 2)
+
+    for embedding <- [nil, "[1.0,0.0]"] do
+      {docs, []} =
+        Search.search("define tool schema",
+          package: "fixture",
+          version: "1.0.0",
+          embedding: embedding
+        )
+
+      assert hd(docs).id == guide.id
+      assert length(docs) == 10
+      assert Repo.aggregate(PackageDoc, :count) == 16
+    end
+
+    {docs, []} = Search.search("schema", package: "fixture", version: "1.0.0")
+    assert Enum.any?(docs, &(&1.content == "# `schema`"))
+  end
+
   defp insert_doc(content) do
     Repo.insert!(%PackageDoc{
       package: "fixture",

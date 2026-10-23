@@ -49,7 +49,10 @@ skill-compatible clients can use `SKILL.md` and its `references/` folder.
 - Cloud AI models (embeddings, chat-small, chat-large).
 
 >[!IMPORTANT]
-> It uses AI support for computing embeddings and chat completions; you must provide an **AI_API_KEY** and three models.
+> Documentation ingestion and semantic search need an embedding model. Memory
+> curation also needs chat completions, with small and large model settings.
+> Choose hosted Mistral or local Ollama below; both chat settings can use the
+> same model for evaluation. Local Ollama accepts a placeholder **AI_API_KEY**.
 
 ### Which tool uses which AI provider service?
 
@@ -109,15 +112,151 @@ you expected to find are absent. `mix setup` remains an optional developer short
 
 Rebuild with `mix release --overwrite` after changing code, then reconnect the client — a running BEAM keeps the modules it already loaded.
 
-**2. Get an API key**:
+**2. Choose a provider for evaluation**:
 
-Any OpenAI-compatible provider works but Mistral is the default since it has a free tier generous enough for this workload: the key alone `AI_API_KEY` is *enough* to start.
+Run one of the following configurations in your terminal, from the clone. Each
+uses a separate database so switching embedding models cannot mix vector spaces.
+The application creates and migrates the chosen database on startup.
 
-Any OpenAI-compatible `/embeddings` and `/chat/completions` endpoint works once you set `AI_API_URL`, `AI_EMBED_URL`, `AI_CHAT_URL`, `AI_EMBED_MODEL`, `AI_CHAT_MODEL_SMALL`, `AI_CHAT_MODEL_LARGE`.
+#### Mistral (hosted)
 
-> The `AI_API_KEY` is currently unique for /embeddings and /chat.
+Use a Mistral API key with available credits. These are the application's default
+models; the explicit settings also override any previous local configuration.
 
-**3. In your project**:
+```sh
+export AI_API_KEY="your-mistral-api-key"
+export AI_API_URL="https://api.mistral.ai/v1"
+export AI_EMBED_URL="$AI_API_URL"
+export AI_CHAT_URL="$AI_API_URL"
+export AI_EMBED_MODEL="mistral-embed"
+export AI_CHAT_MODEL_SMALL="mistral-small-latest"
+export AI_CHAT_MODEL_LARGE="mistral-large-latest"
+export DATABASE_PATH="$PWD/priv/mcp-mistral.db"
+export EMBED_BATCH_SIZE="200"
+export EMBED_CONCURRENCY="2"
+export EMBED_PAUSE_MS="0"
+```
+
+#### Ollama (local)
+
+Install [Ollama](https://ollama.com/download) and keep its local server running.
+The desktop app runs the server; for a CLI-only installation, run `ollama serve`
+in another terminal. Download the two models:
+
+```sh
+ollama pull embeddinggemma
+ollama pull llama3.2
+```
+
+[`embeddinggemma`](https://ollama.com/library/embeddinggemma) creates embeddings;
+[`llama3.2`](https://ollama.com/library/llama3.2) supplies chat completions. Reusing
+the chat model for both roles is sufficient to exercise the API, but does not
+establish curation quality. Inference runs locally without hosted API credits.
+Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility)
+accepts the placeholder key below.
+
+```sh
+export AI_API_KEY="local"
+export AI_API_URL="http://localhost:11434/v1"
+export AI_EMBED_URL="$AI_API_URL"
+export AI_CHAT_URL="$AI_API_URL"
+export AI_EMBED_MODEL="embeddinggemma"
+export AI_CHAT_MODEL_SMALL="llama3.2"
+export AI_CHAT_MODEL_LARGE="llama3.2"
+export DATABASE_PATH="$PWD/priv/mcp-ollama.db"
+export EMBED_BATCH_SIZE="8"
+export EMBED_CONCURRENCY="1"
+export EMBED_PAUSE_MS="200"
+```
+
+**3. Check the models, ingest a library, and search**:
+
+For this self-test, point `PROJECT_ROOT` at the clone so versions follow its
+lockfile. When connecting an MCP client in step 4, use the project being edited
+instead. Export settings before starting IEx; `.env` files are not loaded
+automatically.
+
+```sh
+export PROJECT_ROOT="$PWD"
+iex -S mix
+```
+
+Inside IEx, check embedding and chat access independently:
+
+```elixir
+alias StdioMcp.AI.Client
+
+{:ok, vector} = Client.embed("Check embedding access")
+IO.inspect(length(vector), label: "Embedding dimensions")
+
+for model <- Enum.uniq([Client.small_model(), Client.large_model()]) do
+  IO.inspect(
+    Client.chat([%{role: "user", content: "Reply with OK."}], [], model: model),
+    label: model
+  )
+end
+```
+
+Expect a nonempty vector and `{:ok, message}` from each chat model. An HTTP 401
+indicates a key/provider mismatch or invalid key; resolve that before ingestion.
+These checks make provider requests; Mistral usage consumes credits. The first
+local model load can take longer than later calls.
+
+Now load `anubis_mcp` at the version in this clone's lockfile. This direct call
+waits for ingestion to finish, which can take several minutes locally:
+
+```elixir
+alias StdioMcp.Docs.{Lockfile, TarballIngestion}
+
+version = Lockfile.version("anubis_mcp")
+TarballIngestion.ingest("anubis_mcp", version)
+# Success: {:ok, document_count, version}
+```
+
+Only ingestion success means the docs are ready. Repeating this direct call
+re-downloads and re-embeds the package. To search the stored docs through the
+actual tool handler:
+
+```elixir
+{:reply, response, _} =
+  StdioMcp.Tools.SearchDocs.execute(
+    %{package: "anubis_mcp", version: version,
+      query: "define tool schema field required execute"},
+    %{}
+  )
+
+payload = response.content |> hd() |> Map.fetch!("text") |> Jason.decode!()
+IO.inspect(payload["retrieval_mode"], label: "Retrieval mode")
+IO.inspect(payload["notices"], label: "Notices")
+
+payload["results"]
+|> Enum.with_index(1)
+|> Enum.each(fn {doc, rank} ->
+  IO.puts("\n#{rank}. #{doc["signature"]}\n#{doc["hexdocs_url"]}\n#{doc["content"]}")
+end)
+```
+
+Expect `"hybrid"`, an empty notices list, and version-matched passages with links.
+The tool returns documentation, not a chat-generated answer. A `"keyword"` mode
+means semantic retrieval degraded: read the notices. Query embedding has a
+two-second budget, so a cold local model may need a warm-up and a retry.
+
+To benchmark retrieval, exit IEx with `Ctrl+C` twice, then run in the same terminal
+with the same provider and database environment:
+
+```sh
+mix docs.eval --modes fts,vector,rrf --limit 10 --verbose
+```
+
+This evaluates only packages already indexed; it does not ingest missing ones.
+With just `anubis_mcp`, expect exclusions for other packages. Review exclusions
+and returned passages: expectations may also name APIs that changed between
+versions. A partial run is a smoke test, not a complete quality comparison.
+Compare providers with the same package versions and corpus; preserve separate
+databases. The benchmark uses embeddings, not chat completions, and the chat
+check above verifies connectivity rather than `remember`'s curation decisions.
+
+**4. Connect from your project**:
 
 Install the [Hex Local skill](skills/hex-local/SKILL.md), or copy `CLAUDE.md` or
 `AGENTS.md` from the clone into the repo where you want to use the server.
@@ -126,6 +265,11 @@ This is what teaches the assistant that `package` is required, that a multi-pack
 Copy the config file `.mcp.example.json` → `.mcp.json`.
 
 Then ❇️ edit **three values** below in *.mcp.json*  placed in your project:
+
+The example uses Mistral defaults. For Ollama, copy the provider/model/tuning
+values from step 2 into this `env` object as literal strings, along with the
+absolute `DATABASE_PATH` used for evaluation. GUI clients may not inherit your
+terminal exports, and JSON does not expand `$PWD` or `$AI_API_URL`.
 
 ```json
 {
@@ -373,7 +517,7 @@ concurrently is a reliable way to collect 429s.
 
 A warm search embeds the query, retrieves package-scoped candidates sequentially
 from FTS5 and exact cosine search, then combines their ranks with reciprocal rank
-fusion (RRF). There is no reranker. SQLite scans the scoped stored vectors;
+fusion (RRF) and a content weight. There is no learned reranker. SQLite scans the scoped stored vectors;
 this is exact search, not an approximate nearest-neighbour index.
 
 ```mermaid
@@ -382,17 +526,23 @@ flowchart LR
     E --> I[ensure package version is indexed]
     I --> F[FTS5: top 15]
     I --> V[cosine: top 15]
-    F --> R[RRF: pool of 10]
+    F --> R[RRF: candidate union]
     V --> R
     R --> H[hydrate in fused order]
-    H --> O[up to 10 chunks + retrieval_mode + notices]
+    H --> W[content weight, then select ten]
+    W --> O[up to 10 chunks + retrieval_mode + notices]
 ```
 
 Both retrieval arms apply package, version and examples filters **before** their
 limit. The FTS tokenizer preserves `_` and `/`; query expansion searches both
 whole identifiers and their component words. RRF adds `1 / (60 + rank)` per arm.
 Agreement between arms is rewarded, but an item found by only one can survive.
-The entire fused pool is returned to the assistant.
+Before selecting the final ten chunks, prose queries apply a soft content weight:
+heading-only entries, descriptions that merely repeat their title, and bare
+typespecs receive 40% of their RRF score. Explanations and code examples keep their
+full score. Weighting the entire candidate union lets useful single-arm hits
+displace stubs before the cutoff. Identifier queries retain ordinary RRF ordering.
+All documents remain indexed; this needs no re-embedding or chat-model call.
 
 ### Chunking and ingestion
 

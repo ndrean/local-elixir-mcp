@@ -4,12 +4,14 @@ defmodule StdioMcp.Docs.Search do
   import SqliteVec.Ecto.Query
   alias StdioMcp.Docs.Deadline
   alias StdioMcp.Docs.EmbeddingConfig
+  alias StdioMcp.Docs.Fusion
   alias StdioMcp.Docs.HexPackage
   alias StdioMcp.Docs.IngestionJob
   alias StdioMcp.Docs.Lockfile
   alias StdioMcp.Docs.QuerySanitizer
   alias StdioMcp.Docs.RepairBudget
   alias StdioMcp.Docs.Retrieval
+  alias StdioMcp.Docs.ResultRanking
   alias StdioMcp.Docs.TarballIngestion
   alias StdioMcp.PackageDoc
   alias StdioMcp.Repo
@@ -197,7 +199,8 @@ defmodule StdioMcp.Docs.Search do
       Retrieval.run(
         fn -> fts_ids(base_query, match) end,
         fn -> vector_ids(base_query, vec_param) end,
-        max(@pool_depth, limit)
+        max(@pool_depth, limit),
+        &rank_ids(&1, query, &2)
       )
 
     {ids |> hydrate() |> Enum.take(limit), notices, mode}
@@ -208,15 +211,30 @@ defmodule StdioMcp.Docs.Search do
       Retrieval.run(
         fn ->
           case QuerySanitizer.to_match(query) do
-            "" -> Repo.all(from(d in base_query, select: d.id, limit: ^limit))
-            match -> base_query |> fts_query(match, limit) |> select([d], d.id) |> Repo.all()
+            "" ->
+              Repo.all(from(d in base_query, select: d.id, limit: ^limit))
+
+            match ->
+              base_query
+              |> fts_query(match, max(@arm_depth, limit))
+              |> select([d], d.id)
+              |> Repo.all()
           end
         end,
         nil,
-        limit
+        limit,
+        &rank_ids(&1, query, &2)
       )
 
     {hydrate(ids), notices, mode}
+  end
+
+  defp rank_ids(ranked_lists, query, limit) do
+    ranked_lists
+    |> Fusion.rrf(Enum.sum(Enum.map(ranked_lists, &length/1)))
+    |> hydrate()
+    |> ResultRanking.rank(ranked_lists, query, limit)
+    |> Enum.map(& &1.id)
   end
 
   # Both arms are scoped by joining `base_query`, which already carries the

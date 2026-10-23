@@ -50,12 +50,19 @@ defmodule StdioMcp.Docs.Fusion do
   @spec rrf([[term()]], pos_integer(), non_neg_integer()) :: [term()]
   def rrf(ranked_lists, limit, k \\ @default_k) do
     ranked_lists
+    |> scores(k)
+    |> Enum.sort_by(fn {_id, score} -> -score end)
+    |> Enum.take(limit)
+    |> Enum.map(fn {id, _score} -> id end)
+  end
+
+  @doc "Untruncated RRF scores, for callers that apply document-specific weights."
+  @spec scores([[term()]], non_neg_integer()) :: map()
+  def scores(ranked_lists, k \\ @default_k) do
+    ranked_lists
     |> Enum.flat_map(fn ids ->
       ids |> Enum.with_index(1) |> Enum.map(fn {id, rank} -> {id, 1 / (k + rank)} end)
     end)
     |> Enum.reduce(%{}, fn {id, score}, acc -> Map.update(acc, id, score, &(&1 + score)) end)
-    |> Enum.sort_by(fn {_id, score} -> -score end)
-    |> Enum.take(limit)
-    |> Enum.map(fn {id, _score} -> id end)
   end
 end
