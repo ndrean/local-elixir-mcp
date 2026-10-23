@@ -5,10 +5,12 @@ defmodule StdioMcp.Tools.SearchDocs do
 
   ## Usage Notes
 
+    * **Context**: Use `get_doc` with a result ID to read neighboring chunks from the same entry.
     * **Scope**: Always scoped to a single `package`. Issue separate calls for multi-package queries.
     * **Query**: Keep `query` concise and omit the package name to avoid keyword/vector noise.
     * **Version**: When `PROJECT_ROOT` is set, omitting `version` resolves `"latest"` to the version pinned in the calling project's `mix.lock` (falling back to Hex latest stable). Pass `version` explicitly to query an unpinned release.
     * **Notices**: Check returned `notices` for version drift, background ingestion progress, or missing embeddings.
+    * **Metadata**: `index_status` reports indexing state; `ingested_this_request` reports observed completion, including joined jobs. `resolved_version` and `version_source` identify the selected target, which may differ from cached result versions during a pending or failed refresh. `elapsed_ms` includes query embedding.
     * **Source Code**: Results include `hexdocs_url` and a `source_url` linking directly to the file and line.
   """
 
@@ -48,6 +50,11 @@ defmodule StdioMcp.Tools.SearchDocs do
         "Optional boolean to force re-ingesting the package's docs from Hex.pm, replacing what is indexed. Use when docs are stale or the local index looks wrong."
     )
 
+    field(:doc_category, :string,
+      description:
+        "Optional documentation category: all (default), guides, api, or changelogs. Guides are ExDoc extras excluding common changelog page names; api includes non-extras entries. Changelogs are identified by page name, not content."
+    )
+
     field(:include_examples_only, :boolean,
       description: "Optional boolean to filter results to only entries containing code snippets."
     )
@@ -55,6 +62,7 @@ defmodule StdioMcp.Tools.SearchDocs do
 
   @impl true
   def execute(params, frame) do
+    started = System.monotonic_time(:millisecond)
     query = params[:query]
     package = params[:package]
     version = params[:version]
@@ -82,6 +90,7 @@ defmodule StdioMcp.Tools.SearchDocs do
       version: version,
       refresh: refresh,
       include_examples_only: examples_only,
+      doc_category: params[:doc_category] || "all",
       embedding: vector,
       # 10, and the fused pool is returned whole. Recall@5 is 0.96 against 1.00 at
       # ten on the 28-query eval: cutting at five drops a document the retrieval
@@ -99,7 +108,7 @@ defmodule StdioMcp.Tools.SearchDocs do
       limit: 10
     ]
 
-    %{results: results, notices: notices, retrieval_mode: mode} =
+    search_result =
       case Deadline.run(deadline, fn -> Search.search_detailed(query, opts) end) do
         {:ok, result} ->
           result
@@ -107,6 +116,10 @@ defmodule StdioMcp.Tools.SearchDocs do
         {:error, reason} ->
           %{
             results: [],
+            index_status: :unknown,
+            ingested_this_request: nil,
+            resolved_version: nil,
+            version_source: nil,
             retrieval_mode: :none,
             notices: [
               "Search did not finish within its request budget (#{inspect(reason)}). " <>
@@ -115,6 +128,7 @@ defmodule StdioMcp.Tools.SearchDocs do
           }
       end
 
+    %{results: results, notices: notices, retrieval_mode: mode} = search_result
     notices = embedding_notices ++ notices
 
     formatted =
@@ -133,7 +147,10 @@ defmodule StdioMcp.Tools.SearchDocs do
         }
       end)
 
-    payload = %{results: formatted, notices: notices, retrieval_mode: mode}
+    payload =
+      search_result
+      |> Map.merge(%{results: formatted, notices: notices, retrieval_mode: mode})
+      |> Map.put(:elapsed_ms, System.monotonic_time(:millisecond) - started)
 
     {:reply, Response.text(Response.tool(), Jason.encode!(payload)), frame}
   rescue

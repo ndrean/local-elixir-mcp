@@ -22,8 +22,8 @@ defmodule StdioMcp.Docs.Search do
   @type notices :: [String.t()]
 
   @typedoc """
-  The version an ingestion actually resolved to. `nil` when the answer came from
-  cache, because no resolution took place.
+  The version returned by ingestion, or selected from the existing index.
+  `nil` when version resolution failed.
   """
   @type resolved_version :: String.t() | nil
 
@@ -54,6 +54,11 @@ defmodule StdioMcp.Docs.Search do
                      default: false,
                      doc: "Whether to force re-ingesting the package."
                    ],
+                   doc_category: [
+                     type: {:in, ["all", "guides", "api", "changelogs"]},
+                     default: "all",
+                     doc: "Limit retrieval to guides, API entries, or changelog pages."
+                   ],
                    include_examples_only: [
                      type: :boolean,
                      default: false,
@@ -78,20 +83,34 @@ defmodule StdioMcp.Docs.Search do
   end
 
   def search_detailed(query, opts \\ []) when is_binary(query) do
-    case NimbleOptions.validate(opts, @search_schema) do
-      {:ok, validated} ->
-        case presence(validated[:package]) do
-          nil -> %{results: [], notices: [@no_package_notice], retrieval_mode: :none}
-          package -> search_package(query, package, validated)
-        end
+    started = System.monotonic_time(:millisecond)
 
-      {:error, %NimbleOptions.ValidationError{} = err} ->
-        %{
-          results: [],
-          notices: ["Invalid search options: #{Exception.message(err)}"],
-          retrieval_mode: :none
-        }
-    end
+    result =
+      case NimbleOptions.validate(opts, @search_schema) do
+        {:ok, validated} ->
+          case presence(validated[:package]) do
+            nil -> %{results: [], notices: [@no_package_notice], retrieval_mode: :none}
+            package -> search_package(query, package, validated)
+          end
+
+        {:error, %NimbleOptions.ValidationError{} = err} ->
+          %{
+            results: [],
+            notices: ["Invalid search options: #{Exception.message(err)}"],
+            retrieval_mode: :none
+          }
+      end
+
+    Map.merge(
+      %{
+        index_status: :not_checked,
+        ingested_this_request: false,
+        resolved_version: nil,
+        version_source: nil
+      },
+      result
+    )
+    |> Map.put(:elapsed_ms, System.monotonic_time(:millisecond) - started)
   end
 
   @spec search_package(String.t(), String.t(), keyword()) :: map()
@@ -103,18 +122,40 @@ defmodule StdioMcp.Docs.Search do
     embedding = opts[:embedding]
     limit = opts[:limit]
 
-    {notices, resolved_version} = ensure_ingested(package, version, refresh)
+    {notices, resolved_version, metadata} = ensure_ingested(package, version, refresh)
 
     base_query =
       from(d in PackageDoc)
       |> scope_package(package)
       |> scope_version(resolved_version || version)
       |> scope_examples(examples_only)
+      |> scope_doc_category(opts[:doc_category])
 
     {embedding, config_notices} = verify_embedding_model(embedding)
 
     {results, query_notices, mode} = run_query(base_query, query, embedding, limit)
-    %{results: results, notices: notices ++ config_notices ++ query_notices, retrieval_mode: mode}
+
+    Map.merge(metadata, %{
+      results: results,
+      notices: notices ++ config_notices ++ query_notices,
+      retrieval_mode: mode
+    })
+  end
+
+  defp metadata(status, version, ingested \\ false, source \\ :cache) do
+    %{
+      index_status: status,
+      resolved_version: version,
+      ingested_this_request: ingested,
+      version_source: source
+    }
+  end
+
+  defp cached_metadata(package, version) do
+    metadata(
+      if(missing_embeddings(package, version) == 0, do: :ready, else: :incomplete),
+      version
+    )
   end
 
   # Dropping the embedding here routes the search down the FTS-only clause of
@@ -163,6 +204,38 @@ defmodule StdioMcp.Docs.Search do
 
   defp scope_examples(query, true),
     do: from(d in query, where: not is_nil(d.code_snippet) and d.code_snippet != "")
+
+  # ExDoc stores changelogs as extras too. Match page identifiers rather than
+  # headings/content, so a guide discussing release history remains a guide.
+  @changelog_pages ~w(changelog changes history release_notes release-notes releasenotes)
+
+  defp scope_doc_category(query, "all"), do: query
+  defp scope_doc_category(query, "api"), do: from(d in query, where: d.doc_type != "extras")
+
+  defp scope_doc_category(query, category) do
+    changelog =
+      Enum.reduce(@changelog_pages, dynamic(false), fn page, acc ->
+        nested = "/" <> page
+
+        dynamic(
+          [d],
+          ^acc or fragment("lower(coalesce(?, ''))", d.module) == ^page or
+            fragment("substr(lower(coalesce(?, '')), ?)", d.module, ^(-String.length(nested))) ==
+              ^nested
+        )
+      end)
+
+    extras = from(d in query, where: d.doc_type == "extras")
+
+    case category do
+      "changelogs" ->
+        from(d in extras, where: ^changelog)
+
+      "guides" ->
+        guide = dynamic(not (^changelog))
+        from(d in extras, where: ^guide)
+    end
+  end
 
   # Blank and non-binary both collapse to nil, so every caller below tests
   # presence with a plain nil check rather than repeating `x && x != ""`.
@@ -295,18 +368,19 @@ defmodule StdioMcp.Docs.Search do
   # One version per package is the invariant, so this never has to choose between
   # stored versions; it decides whether what is stored is the version we want and
   # whether it is complete.
-  @spec ensure_ingested(String.t(), String.t(), boolean()) :: {notices(), resolved_version()}
+  @spec ensure_ingested(String.t(), String.t(), boolean()) ::
+          {notices(), resolved_version(), map()}
 
   # `refresh: true` is the escape hatch and overrides every rule below: resolve a
   # target and re-ingest it, whatever is stored.
   defp ensure_ingested(package, requested, true) do
     case resolve_target(package, requested) do
-      {:ok, target, docs_url} ->
+      {:ok, target, docs_url, source} ->
         Logger.info("[Docs.Search] refresh requested for #{package} (#{target})")
-        ingest(package, target, docs_url)
+        ingest(package, target, docs_url, source)
 
       {:error, notices} ->
-        {notices, nil}
+        {notices, nil, metadata(:error, nil, false, nil)}
     end
   end
 
@@ -315,25 +389,25 @@ defmodule StdioMcp.Docs.Search do
   end
 
   # Nothing stored: resolve and ingest.
-  @spec decide(String.t(), String.t(), term()) :: {list(), String.t()}
+  @spec decide(String.t(), String.t(), term()) :: {notices(), resolved_version(), map()}
   defp decide(package, requested, nil) do
     case resolve_target(package, requested) do
-      {:ok, target, docs_url} -> ingest(package, target, docs_url)
-      {:error, notices} -> {notices, nil}
+      {:ok, target, docs_url, source} -> ingest(package, target, docs_url, source)
+      {:error, notices} -> {notices, nil, metadata(:error, nil, false, nil)}
     end
   end
 
   # fully-cached path and it makes no network call.
   defp decide(package, stored, stored) do
-    serve_or_repair(package, stored, nil)
+    serve_or_repair(package, stored, nil, :explicit)
   end
 
   defp decide(package, requested, stored) when requested != "latest" do
     Logger.info("[Docs.Search] switching #{package} from #{stored} to #{requested}")
 
     case resolve_target(package, requested) do
-      {:ok, target, docs_url} -> ingest(package, target, docs_url)
-      {:error, notices} -> {notices, nil}
+      {:ok, target, docs_url, source} -> ingest(package, target, docs_url, source)
+      {:error, notices} -> {notices, nil, metadata(:error, nil, false, nil)}
     end
   end
 
@@ -351,14 +425,14 @@ defmodule StdioMcp.Docs.Search do
   defp decide(package, "latest", stored) do
     case Lockfile.version(package) do
       nil -> decide_unpinned(package, stored)
-      ^stored -> serve_or_repair(package, stored, nil)
+      ^stored -> serve_or_repair(package, stored, nil, :project_lock)
       pinned -> switch_to_locked(package, stored, pinned)
     end
   end
 
   defp decide_unpinned(package, stored) do
     case app_version(package) do
-      ^stored -> serve_or_repair(package, stored, nil)
+      ^stored -> serve_or_repair(package, stored, nil, :server_app)
       _other -> compare_with_hex(package, stored)
     end
   end
@@ -373,13 +447,13 @@ defmodule StdioMcp.Docs.Search do
     Logger.info("[Docs.Search] #{package}: #{stored} -> #{pinned} (pinned by #{Lockfile.path()})")
 
     case resolve_target(package, pinned) do
-      {:ok, target, docs_url} ->
-        {notices, resolved} = ingest(package, target, docs_url)
+      {:ok, target, docs_url, _source} ->
+        {notices, resolved, metadata} = ingest(package, target, docs_url, :project_lock)
 
-        {[locked_switch_notice(package, stored, pinned) | notices], resolved}
+        {[locked_switch_notice(package, stored, pinned) | notices], resolved, metadata}
 
       {:error, notices} ->
-        {notices, nil}
+        {notices, nil, metadata(:error, nil, false, nil)}
     end
   end
 
@@ -405,7 +479,7 @@ defmodule StdioMcp.Docs.Search do
 
           newer ->
             {[version_notice(package, stored, newer)] ++ incomplete_notices(package, stored),
-             stored}
+             stored, cached_metadata(package, stored)}
         end
 
       {:error, _reason} ->
@@ -417,12 +491,13 @@ defmodule StdioMcp.Docs.Search do
   # Complete data is served as-is. Incomplete data is worth re-ingesting, but
   # only within budget: repair was once unbounded and a package that could not be
   # re-embedded re-downloaded its tarball on every single search forever.
-  @spec serve_or_repair(String.t(), String.t(), term()) :: {list(), String.t()}
-  defp serve_or_repair(package, version, docs_url) do
+  @spec serve_or_repair(String.t(), String.t(), term(), atom()) ::
+          {notices(), resolved_version(), map()}
+  defp serve_or_repair(package, version, docs_url, source \\ :cache) do
     case missing_embeddings(package, version) do
       0 ->
         :ok = RepairBudget.clear(package, version)
-        {[], version}
+        {[], version, metadata(:ready, version, false, source)}
 
       missing ->
         if RepairBudget.allow?(package, version) do
@@ -430,9 +505,10 @@ defmodule StdioMcp.Docs.Search do
             "[Docs.Search] repairing #{package} #{version} (#{missing} rows unembedded)"
           )
 
-          ingest(package, version, docs_url)
+          ingest(package, version, docs_url, source)
         else
-          {[repair_exhausted_notice(package, version, missing)], version}
+          {[repair_exhausted_notice(package, version, missing)], version,
+           metadata(:incomplete, version, false, source)}
         end
     end
   end
@@ -454,14 +530,14 @@ defmodule StdioMcp.Docs.Search do
   @core_doc_sets ~w(elixir eex ex_unit iex logger mix)
 
   @spec resolve_target(String.t(), String.t()) ::
-          {:ok, String.t(), String.t() | nil} | {:error, notices()}
+          {:ok, String.t(), String.t() | nil, atom()} | {:error, notices()}
   defp resolve_target(package, requested) when package in @core_doc_sets do
     version = if requested == "latest", do: System.version(), else: requested
 
     # nil docs_url lets `TarballIngestion.docs_base_url/3` construct
     # `https://<package with _ as ->.hexdocs.pm/<version>`, which serves for all
     # six — verified against elixir.hexdocs.pm and ex-unit.hexdocs.pm.
-    {:ok, version, nil}
+    {:ok, version, nil, if(requested == "latest", do: :server_elixir, else: :explicit)}
   end
 
   # Resolves what to ingest, and refuses a version Hex does not publish rather
@@ -478,15 +554,22 @@ defmodule StdioMcp.Docs.Search do
   # run, then what Hex calls stable. Only the first is a statement about the repo
   # being edited.
   defp target_from(meta, package, "latest") do
-    case Lockfile.version(package) || app_version(package) || HexPackage.latest(meta) do
+    {target, source} =
+      cond do
+        pinned = Lockfile.version(package) -> {pinned, :project_lock}
+        loaded = app_version(package) -> {loaded, :server_app}
+        true -> {HexPackage.latest(meta), :hex_latest}
+      end
+
+    case target do
       nil -> {:error, ["Hex lists no releases for '#{package}'."]}
-      target -> {:ok, target, meta.docs_url}
+      target -> {:ok, target, meta.docs_url, source}
     end
   end
 
   defp target_from(meta, package, requested) do
     if HexPackage.published?(meta, requested) do
-      {:ok, requested, meta.docs_url}
+      {:ok, requested, meta.docs_url, :explicit}
     else
       {:error, [unpublished_notice(package, requested, meta.versions)]}
     end
@@ -564,14 +647,26 @@ defmodule StdioMcp.Docs.Search do
     )
   end
 
-  defp ingest(package, version, docs_url) do
+  defp ingest(package, version, docs_url, source) do
     RepairBudget.record_attempt(package, version)
 
-    TarballIngestion
-    |> IngestionJob.run(package, version, ingest_timeout(), fn ->
-      TarballIngestion.ingest(package, version, docs_url)
-    end)
-    |> handle_ingest_result(package)
+    outcome =
+      TarballIngestion
+      |> IngestionJob.run(package, version, ingest_timeout(), fn ->
+        TarballIngestion.ingest(package, version, docs_url)
+      end)
+
+    {notices, resolved} = handle_ingest_result(outcome, package)
+
+    status =
+      case outcome do
+        {:ok, {:ok, _, _}} -> :ready
+        {:ok, {:ok, _}} -> :ready
+        {:timeout, _} -> :indexing
+        _ -> :error
+      end
+
+    {notices, resolved, metadata(status, resolved || version, status == :ready, source)}
   end
 
   # A row with a nil embedding is invisible to vector search while still

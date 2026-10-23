@@ -1,12 +1,18 @@
 ---
 name: hex-local
-description: Use the Hex Local MCP server for version-aware Elixir and Erlang package documentation, Hex package discovery, and upstream dependency issues. Apply when implementing or checking a dependency's public API, finding a library for a technology, or investigating behavior that differs from its docs. Also supports local debugging knowledge with recall and remember. Skip for ordinary repository edits that need no dependency research.
+description: For Elixir and Erlang developers using AI coding agents. Use when a task needs version-matched API documentation, configuration examples, Hex library discovery, or investigation of unexpected dependency behavior. Guides the agent to retrieve HexDocs and core Elixir docs, check upstream issues, and cite the versions it used. Includes workflows for local debugging knowledge. Requires a separately installed and connected Hex Local MCP server; this skill does not install the server or configure provider credentials.
 ---
 
 # Hex Local
 
 Use published documentation for the package and version the project actually runs.
 Turn retrieved evidence into an answer or implementation, with exact citations.
+
+Requires a separately installed Hex Local MCP server connected to the coding
+agent. Documentation ingestion and semantic search need a configured embedding
+provider: hosted credentials or a local provider such as Ollama. Provider setup
+is separate from installing this skill. This package contains agent instructions
+and supporting references, not the MCP server or an installer.
 
 ## Choose the evidence
 
@@ -75,6 +81,23 @@ search_docs(package: "boruta", query: "authorize access token bearer protect res
 Use `include_examples_only: true` only when examples are specifically needed; it
 can exclude the API or guide explaining the behavior. Issue searches sequentially
 when ingestion is involved, avoiding competing jobs for the same package.
+
+Use `doc_category: "guides"`, `"api"`, or `"changelogs"` when the question calls
+for a particular kind of evidence; omit it (or use `"all"`) for mixed results.
+API includes callbacks and types as well as functions and modules. Guides are
+ExDoc extras excluding recognized changelog page names; migration guides remain
+guides. Changelogs are recognized by common page names, so unusually named ones
+may remain guides. The filter runs before ranking and combines with
+`include_examples_only`; it does not require re-ingestion.
+
+## Read surrounding context
+
+Use `get_doc(id: <search result id>)` when a result is partial or needs context.
+It returns the selected chunk and one neighbor on each side from the same entry,
+in source order. Set `neighbors` from 0 to 5 to adjust the window. Follow
+`previous_id` or `next_id` to continue; `complete?` means the whole entry is present.
+IDs are local and may expire after re-ingestion; search again if one is missing.
+This reads the index without network requests or embedding costs.
 
 ## Read the response before acting
 

@@ -7,3 +7,4 @@ _build/
 .elixir_ls
 scripts/
 *.txt
+NEXT_STEPS.md

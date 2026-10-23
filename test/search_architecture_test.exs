@@ -69,6 +69,11 @@ defmodule StdioMcp.SearchArchitectureTest do
     [%{"text" => text}] = response.content
     payload = Jason.decode!(text)
     assert payload["retrieval_mode"] == "keyword"
+    assert payload["index_status"] == "ready"
+    assert payload["ingested_this_request"] == false
+    assert payload["resolved_version"] == "1.0.0"
+    assert payload["version_source"] == "explicit"
+    assert is_integer(payload["elapsed_ms"]) and payload["elapsed_ms"] >= 2_000
     assert length(payload["results"]) == 1
     assert Enum.any?(payload["notices"], &String.contains?(&1, "deadline_exceeded"))
     assert elapsed < 2_500

@@ -7,6 +7,7 @@ A lightweight Elixir MCP server designed to run over `stdio` with a local SQLite
 | Tool                    | Description                                                                                                                                                                                                                 |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `search_docs`           | Search one Hex package's documentation, typespecs, guides and examples. `package` is required; ingests on demand. Results carry `hexdocs_url` and, for functions, a `source_url` pinned to the exact file, line and version |
+| `get_doc` | Read a search result by `id`, with neighboring chunks from the same entry. `neighbors` defaults to 1 (0–5); continuation IDs allow reading longer entries. IDs may expire after re-ingestion. |
 | `list_indexed_packages` | List indexed packages, versions, completeness, and the version this project depends on                                                                                                                                      |
 | `search_hex_packages`   | Find _which_ package to use — Hex.pm names, descriptions, download counts                                                                                                                                                   |
 | `search_github_issues`  | Live GitHub API search for issues and PRs in an organization (not indexed)                                                                                                                                                  |
@@ -617,6 +618,33 @@ behind another request may still encounter the transport's own timeout.
 arms ran successfully, not whether their results were relevant. Notices explain
 fallbacks. Direct Elixir callers can use `Search.search_detailed/2` for the same
 metadata; `Search.search/2` retains its `{results, notices}` interface.
+
+Search responses also include structured ingestion and version metadata:
+
+| Field | Meaning |
+| --- | --- |
+| `index_status` | `ready` (complete embeddings), `incomplete` (missing embeddings with no repair performed), `indexing` (ingestion still running), `error` (resolution or ingestion failed), `not_checked` (invalid options or missing package), or `unknown` (foreground deadline expired). This describes indexing, independently of retrieval success. |
+| `ingested_this_request` | `true` when this request observed successful ingestion, including a job it joined; `false` for cache hits, pending jobs, or reported failures. `null` after a foreground deadline because completion is unknown. It does not claim this request started the job. |
+| `resolved_version` | Selected version, including cached versions and targets still indexing or whose ingestion failed; `null` if resolution failed or is unknown. Result rows retain their actual indexed versions, which can differ when an old index survives a pending or failed refresh. |
+| `version_source` | `explicit`, `project_lock`, `server_app`, `server_elixir`, or `hex_latest` identifies the authority selecting the version. `cache` means an unpinned indexed version was retained, even when Hex reports a different release. `null` when no version was resolved. |
+| `elapsed_ms` | Monotonic elapsed time for this tool execution, including query embedding. Direct `Search.search_detailed/2` calls measure search only. |
+
+Use the optional `doc_category` search argument to focus the evidence:
+
+| Value | Entries searched |
+| --- | --- |
+| `all` (default) | All documentation, preserving existing behavior. |
+| `guides` | ExDoc `extras`, excluding recognized changelog pages. Migration guides remain guides. |
+| `api` | Non-`extras` entries, including modules, functions, macros, callbacks, types, and other published API kinds. |
+| `changelogs` | ExDoc `extras` whose page identifier is `changelog`, `changes`, `history`, `release_notes`, `release-notes`, or `releasenotes`, case insensitive, including nested paths. |
+
+For example, `search_docs(package: "oban", query: "unique jobs", doc_category: "guides")`
+searches guides; change the category to `api` for API entries. Direct Elixir callers
+can pass the same option to `Search.search/2` or `Search.search_detailed/2`.
+The filter applies before both retrieval arms rank candidates and combines with
+`include_examples_only`. It requires no re-ingestion. Changelog detection uses
+page names rather than prose; unusually named changelogs remain under `guides`.
+Invalid categories return a validation notice without running search or ingestion.
 
 Knowledge vectors carry their own `embedding_model` on each row. Legacy vectors
 with unknown provenance and vectors from other models are excluded from cosine
