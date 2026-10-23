@@ -98,7 +98,8 @@ defmodule StdioMcp.Tools.Remember do
     %{
       accepted: false,
       status: "disabled",
-      reason: "Knowledge memory curation requires AI_API_KEY to be set for classification."
+      reason:
+        "Memory curation is opt-in. Set MEMORY_ENABLED=true and configure an API key and chat models (provider presets supply defaults)."
     }
   end
 end

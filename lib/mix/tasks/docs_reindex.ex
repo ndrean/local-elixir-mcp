@@ -255,7 +255,7 @@ defmodule Mix.Tasks.Docs.Reindex do
 
   defp update_knowledge_embedding({id, [_ | _] = vector}, model) do
     Repo.update_all(from(k in Knowledge, where: k.id == ^id),
-      set: [embedding: Jason.encode!(vector), embedding_model: model]
+      set: [embedding: StdioMcp.Vector.encode!(vector), embedding_model: model]
     )
   end
 

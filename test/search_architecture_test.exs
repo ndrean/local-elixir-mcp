@@ -8,6 +8,7 @@ defmodule StdioMcp.SearchArchitectureTest do
   alias Mix.Tasks.Docs.Eval
   alias Mix.Tasks.Docs.Reindex
   alias StdioMcp.{Knowledge, Memory, PackageDoc, Repo}
+  alias StdioMcp.Vector
 
   alias StdioMcp.Docs.{
     Deadline,
@@ -207,7 +208,9 @@ defmodule StdioMcp.SearchArchitectureTest do
     provider(fn _ -> {200, %{"data" => [%{"embedding" => [0.0, 1.0]}]}} end)
     old = insert_knowledge("preserved learning", "old-model")
     Reindex.run(["--yes"])
-    assert %{embedding: "[0.0,1.0]", embedding_model: "new-model"} = Repo.get!(Knowledge, old.id)
+    updated = Repo.get!(Knowledge, old.id)
+    assert updated.embedding == Vector.encode!([0.0, 1.0])
+    assert updated.embedding_model == "new-model"
   end
 
   test "a malformed knowledge batch cannot partially update provenance" do
@@ -260,7 +263,7 @@ defmodule StdioMcp.SearchArchitectureTest do
         doc_type: "function",
         function: if(i == 11, do: "Req.Steps.retry/1", else: "other/1"),
         content: "backoff",
-        embedding: Jason.encode!([1.0, i / 10])
+        embedding: Vector.encode!([1.0, i / 10])
       })
     end
 
@@ -340,7 +343,7 @@ defmodule StdioMcp.SearchArchitectureTest do
       version: "1.0.0",
       doc_type: "function",
       content: content,
-      embedding: "[1.0,0.0]"
+      embedding: Vector.encode!([1.0, 0.0])
     })
   end
 
@@ -349,7 +352,7 @@ defmodule StdioMcp.SearchArchitectureTest do
       title: content,
       kind: "pain_point",
       content: content,
-      embedding: "[1.0,0.0]",
+      embedding: Vector.encode!([1.0, 0.0]),
       embedding_model: model
     })
   end

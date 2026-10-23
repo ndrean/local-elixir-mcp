@@ -10,11 +10,12 @@ defmodule StdioMcp.Docs.Search do
   alias StdioMcp.Docs.Lockfile
   alias StdioMcp.Docs.QuerySanitizer
   alias StdioMcp.Docs.RepairBudget
-  alias StdioMcp.Docs.Retrieval
   alias StdioMcp.Docs.ResultRanking
+  alias StdioMcp.Docs.Retrieval
   alias StdioMcp.Docs.TarballIngestion
   alias StdioMcp.PackageDoc
   alias StdioMcp.Repo
+  alias StdioMcp.Vector
   require Logger
 
   @typedoc "Human-readable messages returned alongside results."
@@ -59,9 +60,9 @@ defmodule StdioMcp.Docs.Search do
                      doc: "Filter results to only entries containing code snippets."
                    ],
                    embedding: [
-                     type: {:or, [:string, nil]},
+                     type: {:or, [:string, {:list, :float}, nil]},
                      default: nil,
-                     doc: "JSON-encoded float vector string or nil."
+                     doc: "Float list, legacy JSON array or nil; packed once for SQLite."
                    ],
                    limit: [
                      type: :pos_integer,
@@ -192,7 +193,7 @@ defmodule StdioMcp.Docs.Search do
   @spec run_query(Ecto.Query.t(), String.t(), list() | String.t() | nil, pos_integer()) ::
           {[PackageDoc.t()], notices(), atom()}
   defp run_query(base_query, query, vec, limit) when is_list(vec) or is_binary(vec) do
-    vec_param = if is_list(vec), do: Jason.encode!(vec), else: vec
+    vec_param = if is_list(vec), do: Vector.encode!(vec), else: Vector.from_json!(vec)
     match = QuerySanitizer.to_match(query)
 
     {ids, notices, mode} =
@@ -282,8 +283,8 @@ defmodule StdioMcp.Docs.Search do
   # sqlite-vec raises on a NULL vector rather than sorting it last.
   defp vector_query(base_query, vec_param, limit) do
     from(d in base_query,
-      where: not is_nil(d.embedding) and d.embedding != "",
-      order_by: [asc: vec_distance_cosine(d.embedding, ^vec_param)],
+      where: not is_nil(d.embedding) and fragment("length(?) > 0", d.embedding),
+      order_by: [asc: vec_distance_cosine(d.embedding, type(^vec_param, :binary))],
       limit: ^limit
     )
   end

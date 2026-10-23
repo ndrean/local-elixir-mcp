@@ -4,22 +4,22 @@ A lightweight Elixir MCP server designed to run over `stdio` with a local SQLite
 
 ## Tools
 
-| Tool | Description |
-| ------ | ------------- |
-| `search_docs` | Search one Hex package's documentation, typespecs, guides and examples. `package` is required; ingests on demand. Results carry `hexdocs_url` and, for functions, a `source_url` pinned to the exact file, line and version |
-| `list_indexed_packages` | List indexed packages, versions, completeness, and the version this project depends on |
-| `search_hex_packages` | Find *which* package to use — Hex.pm names, descriptions, download counts |
-| `search_github_issues` | Live GitHub API search for issues and PRs in an organization (not indexed) |
-| `remember` | Save learnings to the local knowledge base. Takes `texts`, a list — batch a session's lessons into one call. AI assisted curation runs in the background and may merge, append to or discard what you send. |
-| `recall` | Search that knowledge base before re-investigating a failure |
-| `get_token_usage` | AI token consumption recorded locally, by model and date range |
+| Tool                    | Description                                                                                                                                                                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_docs`           | Search one Hex package's documentation, typespecs, guides and examples. `package` is required; ingests on demand. Results carry `hexdocs_url` and, for functions, a `source_url` pinned to the exact file, line and version |
+| `list_indexed_packages` | List indexed packages, versions, completeness, and the version this project depends on                                                                                                                                      |
+| `search_hex_packages`   | Find _which_ package to use — Hex.pm names, descriptions, download counts                                                                                                                                                   |
+| `search_github_issues`  | Live GitHub API search for issues and PRs in an organization (not indexed)                                                                                                                                                  |
+| `remember`              | Save learnings to the local knowledge base. Takes `texts`, a list — batch a session's lessons into one call. AI assisted curation runs in the background and may merge, append to or discard what you send.                 |
+| `recall`                | Search that knowledge base before re-investigating a failure                                                                                                                                                                |
+| `get_token_usage`       | AI token consumption recorded locally, by model and date range                                                                                                                                                              |
 
 The `search_docs` searches against **HexDocs**. Ask a question about an Elixir package; the tool answers from the local index, or downloads and digests the package first if it is not indexed yet. A first-time ingestion of a large package may exceed one tool call — the payload then reports progress and the job continues in the background.
 
 > Why not just `grep deps/`? Because docs are generated from compiled modules, they show the API a macro produced — `grep` for `parse_options!/1` in `anubis_mcp` matches nothing, though it is called two lines below the `defschema` that makes it. And `grep` ranks nothing: it cannot connect "how do I avoid re-embedding" to the docs that say `chunk_overlap`.
 
-The "package ingestion" workflow is documented in *INGESTION.md*.
-The tarball chunking and persistence workflow is documented in *TARBALL_INGESTION.md*.
+The "package ingestion" workflow is documented in _INGESTION.md_.
+The tarball chunking and persistence workflow is documented in _TARBALL_INGESTION.md_.
 
 ## Agent skill
 
@@ -48,21 +48,21 @@ skill-compatible clients can use `SKILL.md` and its `references/` folder.
 - `MDEx` for markdown (parsing and source positions — never rendering), `lazy_html` (Lexbor) for HTML extraction and per-function source links
 - Cloud AI models (embeddings, chat-small, chat-large).
 
->[!IMPORTANT]
-> Documentation ingestion and semantic search need an embedding model. Memory
-> curation also needs chat completions, with small and large model settings.
-> Choose hosted Mistral or local Ollama below; both chat settings can use the
-> same model for evaluation. Local Ollama accepts a placeholder **AI_API_KEY**.
+> [!IMPORTANT]
+> Documentation search needs an embedding model. Select `AI_PROVIDER=mistral`
+> or `openai` and supply `AI_API_KEY`; endpoints and models have defaults.
+> `AI_PROVIDER=ollama` runs locally without an API key. Memory curation is
+> optional and disabled by default; enable it with `MEMORY_ENABLED=true`.
 
 ### Which tool uses which AI provider service?
 
- |Tool                                                        | Embeddings (/embeddings)                                   | Chat Model (/chat/completions) |
-  |--|--|--|
-  | search_docs                                                 | Yes (embed / embed_batch)                                  | No |
- | search_hex_packages                                         | No                                                         | No |
- | search_github_issues                                        | No                                                         | No |
- | recall                                                      | Optional — hybrid FTS+vector with a key, FTS5 only without  | No |
- |  remember                                                    | Yes (embed)                                                | Yes (small & large for taxonomy & deduplication)|
+| Tool                 | Embeddings (/embeddings)                                   | Chat Model (/chat/completions)                   |
+| -------------------- | ---------------------------------------------------------- | ------------------------------------------------ |
+| search_docs          | Yes (embed / embed_batch)                                  | No                                               |
+| search_hex_packages  | No                                                         | No                                               |
+| search_github_issues | No                                                         | No                                               |
+| recall               | Optional — hybrid FTS+vector with a key, FTS5 only without | No                                               |
+| remember             | Yes (embed)                                                | Yes (small & large for taxonomy & deduplication) |
 
 ## Features
 
@@ -70,7 +70,7 @@ skill-compatible clients can use `SKILL.md` and its `references/` folder.
 - **Version-aware**: with `PROJECT_ROOT` set, `latest` resolves to whatever your project's `mix.lock` pins — any age, pre-releases included — falling back to Hex's latest stable when nothing local pins the package. One version per package is kept, so results never interleave versions.
 - **Hybrid search**: FTS5 and exact cosine search retrieve scoped candidates sequentially; reciprocal rank fusion returns up to ten chunks. Retrieval modes and notices expose degraded searches.
 - **Curated knowledge memory**: submissions are embedded, compared to their nearest neighbours, and only then passed to a chat model that chooses `create`, `append`, `merge`, `replace`, `deprecate` or `discard`. The tool `recall` uses the same hybrid retrieval as `search_docs` — FTS5 and cosine fused by RRF — and degrades to keyword-only when no embedding is available, so it still works with no API key.
-- **GitHub issues** are queried live against the GitHub API and are *not* stored locally.
+- **GitHub issues** are queried live against the GitHub API and are _not_ stored locally.
 
 ## Quickstart
 
@@ -84,9 +84,9 @@ SQLite needs no separate install — `ecto_sqlite3` bundles it — and neither d
 
 ⚠️ Two directories are involved and mixing them up fails silently
 
-| | what it is |
-| --- | --- |
-| **the clone** | this repo. You build here; the resulting binary does not care where it is launched from. |
+|                  | what it is                                                                                                      |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| **the clone**    | this repo. You build here; the resulting binary does not care where it is launched from.                        |
 | **your project** | the repo you are editing. The server reads its `mix.lock` to decide which version of a package to answer about. |
 
 **1. In the clone**:
@@ -112,76 +112,84 @@ you expected to find are absent. `mix setup` remains an optional developer short
 
 Rebuild with `mix release --overwrite` after changing code, then reconnect the client — a running BEAM keeps the modules it already loaded.
 
-**2. Choose a provider for evaluation**:
+**2. Choose a provider**:
 
-Run one of the following configurations in your terminal, from the clone. Each
-uses a separate database so switching embedding models cannot mix vector spaces.
-The application creates and migrates the chosen database on startup.
+For hosted providers, only `AI_PROVIDER` and `AI_API_KEY` are needed for AI
+configuration. Mistral remains the default when `AI_PROVIDER` is omitted.
+Explicit `AI_*` endpoints and model names override presets; remove old overrides
+when switching providers. Use a separate database for each embedding model, or
+run `mix docs.reindex` deliberately; changing providers does not convert an index.
+
+| Provider  | Embedding model          | Chat small / large (optional memory)            |
+| --------- | ------------------------ | ----------------------------------------------- |
+| `mistral` | `mistral-embed`          | `mistral-small-latest` / `mistral-large-latest` |
+| `openai`  | `text-embedding-3-small` | `gpt-4o-mini` / `gpt-4o-mini`                   |
+| `ollama`  | `embeddinggemma`         | `llama3.2` / `llama3.2`                         |
 
 #### Mistral (hosted)
 
-Use a Mistral API key with available credits. These are the application's default
-models; the explicit settings also override any previous local configuration.
+```sh
+export AI_PROVIDER="mistral"
+export AI_API_KEY="your-mistral-api-key"
+export DATABASE_PATH="$PWD/priv/mcp-mistral.db"
+```
+
+#### OpenAI (hosted)
 
 ```sh
-export AI_API_KEY="your-mistral-api-key"
-export AI_API_URL="https://api.mistral.ai/v1"
-export AI_EMBED_URL="$AI_API_URL"
-export AI_CHAT_URL="$AI_API_URL"
-export AI_EMBED_MODEL="mistral-embed"
-export AI_CHAT_MODEL_SMALL="mistral-small-latest"
-export AI_CHAT_MODEL_LARGE="mistral-large-latest"
-export DATABASE_PATH="$PWD/priv/mcp-mistral.db"
-export EMBED_BATCH_SIZE="200"
-export EMBED_CONCURRENCY="2"
-export EMBED_PAUSE_MS="0"
+export AI_PROVIDER="openai"
+export AI_API_KEY="your-openai-api-key"
+export DATABASE_PATH="$PWD/priv/mcp-openai.db"
 ```
+
+The OpenAI preset preserves the default 1536 dimensions of
+[`text-embedding-3-small`](https://developers.openai.com/api/docs/guides/embeddings).
+Its optional chat model is
+[`gpt-4o-mini`](https://developers.openai.com/api/docs/models/gpt-4o-mini).
 
 #### Ollama (local)
 
 Install [Ollama](https://ollama.com/download) and keep its local server running.
-The desktop app runs the server; for a CLI-only installation, run `ollama serve`
-in another terminal. Download the two models:
+For a CLI-only installation, run `ollama serve` in another terminal. Download
+only the embedding model for documentation search:
 
 ```sh
 ollama pull embeddinggemma
-ollama pull llama3.2
+export AI_PROVIDER="ollama"
+export DATABASE_PATH="$PWD/priv/mcp-ollama.db"
 ```
 
-[`embeddinggemma`](https://ollama.com/library/embeddinggemma) creates embeddings;
-[`llama3.2`](https://ollama.com/library/llama3.2) supplies chat completions. Reusing
-the chat model for both roles is sufficient to exercise the API, but does not
-establish curation quality. Inference runs locally without hosted API credits.
-Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility)
-accepts the placeholder key below.
+The preset uses `http://localhost:11434/v1` and supplies the placeholder API key
+accepted by Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility).
+It also defaults ingestion to batches of 8, one concurrent request, and a 200 ms
+pause; explicit tuning overrides remain available.
+
+#### Optional memory curation
+
+Documentation ingestion and search do not use chat completions. `remember` is
+opt-in, including for existing installations upgrading to this version:
 
 ```sh
-export AI_API_KEY="local"
-export AI_API_URL="http://localhost:11434/v1"
-export AI_EMBED_URL="$AI_API_URL"
-export AI_CHAT_URL="$AI_API_URL"
-export AI_EMBED_MODEL="embeddinggemma"
-export AI_CHAT_MODEL_SMALL="llama3.2"
-export AI_CHAT_MODEL_LARGE="llama3.2"
-export DATABASE_PATH="$PWD/priv/mcp-ollama.db"
-export EMBED_BATCH_SIZE="8"
-export EMBED_CONCURRENCY="1"
-export EMBED_PAUSE_MS="200"
+export MEMORY_ENABLED="true"
+# Ollama users also need the preset's chat model:
+# ollama pull llama3.2
 ```
+
+The provider supplies both chat model defaults; advanced users can override
+`AI_CHAT_MODEL_SMALL` and `AI_CHAT_MODEL_LARGE`. With memory disabled, `remember` returns a disabled explanation without opening a decision or calling a provider.
+`recall` continues to search existing memories, with keyword fallback if no embedding is available. Disabling memory does not delete stored entries.
+Unknown providers and invalid `MEMORY_ENABLED` values fail startup clearly.
 
 **3. Check the models, ingest a library, and search**:
 
-For this self-test, point `PROJECT_ROOT` at the clone so versions follow its
-lockfile. When connecting an MCP client in step 4, use the project being edited
-instead. Export settings before starting IEx; `.env` files are not loaded
-automatically.
+For this self-test, point `PROJECT_ROOT` at the clone so versions follow its lockfile. When connecting an MCP client in step 4, use the project being edited instead. Export settings before starting IEx; `.env` files are not loaded automatically.
 
 ```sh
 export PROJECT_ROOT="$PWD"
 iex -S mix
 ```
 
-Inside IEx, check embedding and chat access independently:
+Inside IEx, check embedding access, and chat access only if memory is enabled:
 
 ```elixir
 alias StdioMcp.AI.Client
@@ -189,15 +197,17 @@ alias StdioMcp.AI.Client
 {:ok, vector} = Client.embed("Check embedding access")
 IO.inspect(length(vector), label: "Embedding dimensions")
 
-for model <- Enum.uniq([Client.small_model(), Client.large_model()]) do
-  IO.inspect(
-    Client.chat([%{role: "user", content: "Reply with OK."}], [], model: model),
-    label: model
-  )
+if Client.memory_enabled?() do
+  for model <- Enum.uniq([Client.small_model(), Client.large_model()]) do
+    IO.inspect(
+      Client.chat([%{role: "user", content: "Reply with OK."}], [], model: model),
+      label: model
+    )
+  end
 end
 ```
 
-Expect a nonempty vector and `{:ok, message}` from each chat model. An HTTP 401
+Expect a nonempty vector and, when memory is enabled, `{:ok, message}` from each chat model. An HTTP 401
 indicates a key/provider mismatch or invalid key; resolve that before ingestion.
 These checks make provider requests; Mistral usage consumes credits. The first
 local model load can take longer than later calls.
@@ -264,11 +274,11 @@ This is what teaches the assistant that `package` is required, that a multi-pack
 
 Copy the config file `.mcp.example.json` → `.mcp.json`.
 
-Then ❇️ edit **three values** below in *.mcp.json*  placed in your project:
+Edit the launch path, project path, provider and API key in your project’s `.mcp.json`:
 
-The example uses Mistral defaults. For Ollama, copy the provider/model/tuning
-values from step 2 into this `env` object as literal strings, along with the
-absolute `DATABASE_PATH` used for evaluation. GUI clients may not inherit your
+Choose `AI_PROVIDER` and supply its key for hosted providers; Ollama needs no
+key. Set the absolute `DATABASE_PATH` used for evaluation. Add
+`"MEMORY_ENABLED": "true"` only to enable memory curation. GUI clients may not inherit your
 terminal exports, and JSON does not expand `$PWD` or `$AI_API_URL`.
 
 ```json
@@ -278,6 +288,7 @@ terminal exports, and JSON does not expand `$PWD` or `$AI_API_URL`.
       "command": "<ABSOLUTE/PATH/TO/THE/CLONE local_hex_mcp>/_build/prod/rel/stdio_mcp/bin/stdio_mcp",
       "args": ["start"],
       "env": {
+        "AI_PROVIDER": "mistral",
         "AI_API_KEY": "<YOUR-API-KEY>",
         "PROJECT_ROOT": "<ABSOLUTE/PATH/TO/THE/REPO/YOU/ARE/EDITING>",
 
@@ -294,7 +305,7 @@ Antigravity reads `~/.gemini/config/mcp_config.json`, or `.agents/plugins/<name>
 
 `MCP_TRANSPORT=stdio` is required and already in the example — without it the server starts with no MCP in it (`mcp_children/0` returns `[]`).
 
-⚠️ **Pointing `PROJECT_ROOT` at the clone is the easy mistake, and nothing reports it.** Version resolution then reads *this* project's lockfile and answers confidently about the wrong versions.
+⚠️ **Pointing `PROJECT_ROOT` at the clone is the easy mistake, and nothing reports it.** Version resolution then reads _this_ project's lockfile and answers confidently about the wrong versions.
 
 > **One shared database is the normal case.**
 
@@ -321,33 +332,33 @@ returns a clean human-friendly Markdown
 <summary>example</summary>
 
 ```json
-    {
-      "total_requests": 12,
-      "total_tokens": 10450,
-      "total_prompt_tokens": 8200,
-      "total_completion_tokens": 2250,
-      "period": {
-        "from": "2026-08-01",
-        "until": "2026-08-01"
-      },
-      "by_model": {
-        "mistral-embed": {
-          "requests": 8,
-          "prompt_tokens": 6500,
-          "completion_tokens": 0,
-          "total_tokens": 6500
-        },
-        "mistral-small-latest": {
-          "requests": 4,
-          "prompt_tokens": 1700,
-          "completion_tokens": 2250,
-          "total_tokens": 3950
-        }
-      }
+{
+  "total_requests": 12,
+  "total_tokens": 10450,
+  "total_prompt_tokens": 8200,
+  "total_completion_tokens": 2250,
+  "period": {
+    "from": "2026-08-01",
+    "until": "2026-08-01"
+  },
+  "by_model": {
+    "mistral-embed": {
+      "requests": 8,
+      "prompt_tokens": 6500,
+      "completion_tokens": 0,
+      "total_tokens": 6500
+    },
+    "mistral-small-latest": {
+      "requests": 4,
+      "prompt_tokens": 1700,
+      "completion_tokens": 2250,
+      "total_tokens": 3950
     }
-  ```
+  }
+}
+```
 
-</details>  
+</details>
 
 ## Developing on this server
 
@@ -378,24 +389,27 @@ rebuilt the release. Pick one path per session rather than mixing them.
 
 Set in the `env` block of your MCP config; they take effect on a server restart, with no recompile. A malformed value falls back to the default rather than raising.
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `INGEST_TIMEOUT_MS` | `25000` | How long a search waits for an in-flight ingestion. Must stay **below** the MCP transport's request ceiling (Anubis' session call gives up at 30s), or the request dies before the progress notice can be returned. |
-| `EMBED_BATCH_SIZE` | `200` | Inputs per embeddings request. The provider limits *requests* per second, so larger batches reduce 429s. The real ceiling is tokens per request, but a token-limit rejection is bisected automatically, so this rarely needs tuning. |
-| `EMBED_CONCURRENCY` | `2` | Concurrent embedding requests. Bounded by the Finch pool and the provider's rate limit — not by CPU count; the work is IO-bound. |
-| `EMBED_PAUSE_MS` | `0` | Pause after each embedding request, for providers that limit requests per second. `0` means no pacing. Raise only if 429s persist after lowering concurrency. |
+| Variable            | Default           | Notes                                                                                                                                                                                                                                |
+| ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `INGEST_TIMEOUT_MS` | `25000`           | How long a search waits for an in-flight ingestion. Must stay **below** the MCP transport's request ceiling (Anubis' session call gives up at 30s), or the request dies before the progress notice can be returned.                  |
+| `EMBED_BATCH_SIZE`  | `200`; Ollama `8` | Inputs per embeddings request. The provider limits _requests_ per second, so larger batches reduce 429s. The real ceiling is tokens per request, but a token-limit rejection is bisected automatically, so this rarely needs tuning. |
+| `EMBED_CONCURRENCY` | `2`; Ollama `1`   | Concurrent embedding requests. Bounded by the Finch pool and the provider's rate limit — not by CPU count; the work is IO-bound.                                                                                                     |
+| `EMBED_PAUSE_MS`    | `0`; Ollama `200` | Pause after each embedding request, for providers that limit requests per second. `0` means no pacing. Raise only if 429s persist after lowering concurrency.                                                                        |
 
 Everything else the server reads:
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| AI_API_KEY | — | Required. `AI_API_URL` points at any OpenAI-compatible provider. |
-| PROJECT_ROOT | unset | Required. The repo being edited — **not** this clone. |
-| DATABASE_PATH | `<this repo>/priv/mcp.db` | The default is absolute and compiled in. Startup creates and migrates the selected database. Set it for a separate index, and use the same value for maintenance commands. |
-| `AI_EMBED_MODEL` | `mistral-embed` | Changing it invalidates the whole index; `mix docs.reindex` is the supported path. |
-| `AI_CHAT_MODEL_SMALL` / `_LARGE` | `mistral-small-latest` / `mistral-large-latest` | Structuring and curation for `remember`. |
-| `GITHUB_TOKEN` | unset | Raises the rate limit for `search_github_issues`. |
-| `MCP_LOG_FILE` / `MCP_LOG_LEVEL` | unset / `warning` | The only way to see anything: stderr is discarded by the client. |
+| Variable                                      | Default                    | Notes                                                                                                                                                                      |
+| --------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AI_PROVIDER`                                 | `mistral`                  | `mistral`, `openai`, or `ollama`; supplies endpoints, models and ingestion defaults.                                                                                       |
+| `AI_API_KEY`                                  | unset; `ollama` for Ollama | Required for hosted providers.                                                                                                                                             |
+| `MEMORY_ENABLED`                              | `false`                    | Set `true` to enable `remember` curation. Existing `recall` remains available.                                                                                             |
+| `AI_API_URL` / `AI_EMBED_URL` / `AI_CHAT_URL` | Provider endpoint          | Shared URL override; embedding/chat overrides take precedence over it.                                                                                                     |
+| PROJECT_ROOT                                  | unset                      | Required. The repo being edited — **not** this clone.                                                                                                                      |
+| DATABASE_PATH                                 | `<this repo>/priv/mcp.db`  | The default is absolute and compiled in. Startup creates and migrates the selected database. Set it for a separate index, and use the same value for maintenance commands. |
+| `AI_EMBED_MODEL`                              | Provider preset            | Changing it invalidates the whole index; `mix docs.reindex` is the supported path.                                                                                         |
+| `AI_CHAT_MODEL_SMALL` / `_LARGE`              | Provider preset            | Structuring and curation for `remember`.                                                                                                                                   |
+| `GITHUB_TOKEN`                                | unset                      | Raises the rate limit for `search_github_issues`.                                                                                                                          |
+| `MCP_LOG_FILE` / `MCP_LOG_LEVEL`              | unset / `warning`          | The only way to see anything: stderr is discarded by the client.                                                                                                           |
 
 > Changing code requires `MIX_ENV=prod mix compile` **and** reconnecting the MCP server — recompiling alone does not reload modules into a running BEAM.
 
@@ -408,7 +422,7 @@ Replicate your SQLite database to cloud storage (S3, B2, etc.) for backup and po
 
 ## Which version do you get?
 
-The server runs from *its own* directory, so `:application.get_key/2` reports the dependencies of `local_hex_mcp` and never the repo you are editing.
+The server runs from _its own_ directory, so `:application.get_key/2` reports the dependencies of `local_hex_mcp` and never the repo you are editing.
 Left at that, `latest` falls through to Hex's latest stable, which may be a different major line than your code compiles against — and nothing in the answer says so.
 
 `PROJECT_ROOT` closes that. Point it at the repo you are working in and the server reads that project's `mix.lock` itself:
@@ -417,12 +431,12 @@ Left at that, `latest` falls through to Hex's latest stable, which may be a diff
 explicit version:  ->  $PROJECT_ROOT/mix.lock  ->  the server's own BEAM  ->  Hex latest stable
 ```
 
-| source | switches the index? | notes |
-| --- | --- | --- |
-| `version:` argument | yes | Explicit wins over everything. |
-| `$PROJECT_ROOT/mix.lock` | **yes** | Authoritative for this project, and may point *backwards*. |
-| the server's own BEAM | no — reports drift | An accident of where the server was launched, not a statement about you. |
-| Hex latest stable | no — reports drift | Correct when nothing local pins the package. |
+| source                   | switches the index? | notes                                                                    |
+| ------------------------ | ------------------- | ------------------------------------------------------------------------ |
+| `version:` argument      | yes                 | Explicit wins over everything.                                           |
+| `$PROJECT_ROOT/mix.lock` | **yes**             | Authoritative for this project, and may point _backwards_.               |
+| the server's own BEAM    | no — reports drift  | An accident of where the server was launched, not a statement about you. |
+| Hex latest stable        | no — reports drift  | Correct when nothing local pins the package.                             |
 
 Read fresh on every lookup, never cached, so `mix deps.get` mid-session is
 picked up without restarting the server.
@@ -451,7 +465,7 @@ the answer must match your lockfile, or accept Hex latest stable.
 
 Every cosine comparison must use vectors from the **same model**. Docs use one global model record; knowledge records model provenance per row.
 
-Two models are never comparable: different dimensions make sqlite-vec raise, and *identical* dimensions raise nothing at all while returning noise.
+Two models are never comparable: different dimensions make sqlite-vec raise, and _identical_ dimensions raise nothing at all while returning noise.
 
 `embedding_config` records the configured docs model name and the dimension read from returned vectors. From that:
 
@@ -463,15 +477,36 @@ So changing `AI_EMBED_MODEL` always costs a full re-embed of every package — t
 
 `mix docs.reindex` is the supported way to do it.
 
+### Binary vector storage
+
+Docs and knowledge embeddings are stored as little-endian float32 BLOBs, and query
+vectors are bound as binary SQL parameters. This avoids parsing JSON for each row
+in a cosine scan. The embedding model, dimensions, and float32 values are unchanged.
+
+On upgrade, the startup migration converts existing JSON vectors in place, with
+no provider requests or re-embedding. It preserves document IDs, text, timestamps,
+FTS content, the docs model record, and per-row knowledge provenance. Invalid
+legacy vectors abort the migration transaction rather than partially converting
+the index. Rollback serializes floats with full round-trip precision.
+
+Direct `Search.search/2` and `search_detailed/2` callers can pass a float list or
+the existing JSON-array query format. Schema-level embedding fields now contain
+packed binaries; new writes accept numeric lists or packed binaries through
+`StdioMcp.Vector`. JSON decoding is explicit through `Vector.from_json!/1`.
+
+The [storage benchmark](priv/eval/vector_storage_results.md) compares identical
+saved queries and vectors before and after conversion, including full cosine
+distances and final result order. Its timings exclude the embedding API call.
+
 ## Maintenance tasks
 
-| Task | What it does | Costs |
-| --- | --- | --- |
-| `mix docs.drift` | Re-derives every package's chunks from its tarball and compares to what is stored. Answers "would a refresh change anything?" | One download per package, **no embeddings** |
-| `mix docs.reindex` | Re-downloads and re-embeds every indexed package under the current model. The supported way to change `AI_EMBED_MODEL`. | Full re-embed |
-| `mix docs.sources` | Backfills `source_url` on rows indexed before that column existed. | One download per package, no embeddings |
-| `mix docs.eval` | Retrieval benchmark over a fixed query set: `success@k`, `MRR@10`, `success@10`, per arm. `--show N` prints the documents each query actually returned. | One embedding per query |
-| `mix docs.judge` | Writes `priv/eval/judgements.md` — what the server returned, for a human to mark relevant or not. `mix docs.eval --judged` then scores precision rather than a single guessed target. | One embedding per query |
+| Task               | What it does                                                                                                                                                                          | Costs                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `mix docs.drift`   | Re-derives every package's chunks from its tarball and compares to what is stored. Answers "would a refresh change anything?"                                                         | One download per package, **no embeddings** |
+| `mix docs.reindex` | Re-downloads and re-embeds every indexed package under the current model. The supported way to change `AI_EMBED_MODEL`.                                                               | Full re-embed                               |
+| `mix docs.sources` | Backfills `source_url` on rows indexed before that column existed.                                                                                                                    | One download per package, no embeddings     |
+| `mix docs.eval`    | Retrieval benchmark over a fixed query set: `success@k`, `MRR@10`, `success@10`, per arm. `--show N` prints the documents each query actually returned.                               | One embedding per query                     |
+| `mix docs.judge`   | Writes `priv/eval/judgements.md` — what the server returned, for a human to mark relevant or not. `mix docs.eval --judged` then scores precision rather than a single guessed target. | One embedding per query                     |
 
 The reflex after changing the chunker is to re-index everything. `mix docs.drift`
 is the cheap check that usually says you do not have to.
@@ -482,14 +517,14 @@ is the cheap check that usually says you do not have to.
 its nearest stored neighbours, and — when one is close enough to be worth
 thinking about — passed to a chat model that decides what to do with it.
 
-| Action | When | What happens |
-| ----------- | ------------------------------------------------------- | --------------------------------------- |
-| **create** | No similar neighbors (similarity < 0.8) | New entry |
-| **discard** | Too similar (> 0.9), no additional value | Do nothing |
-| **append** | Similar neighbor, new info adds value | Concatenate to existing content |
-| **merge** | Overlapping but complementary info | Synthesize old + new into one entry |
-| **replace** | Old info is factually wrong/superseded | Replace content of existing entry |
-| **deprecate** | Neighbor is outdated by new info | Mark old as `outdated=true` |
+| Action        | When                                     | What happens                        |
+| ------------- | ---------------------------------------- | ----------------------------------- |
+| **create**    | No similar neighbors (similarity < 0.8)  | New entry                           |
+| **discard**   | Too similar (> 0.9), no additional value | Do nothing                          |
+| **append**    | Similar neighbor, new info adds value    | Concatenate to existing content     |
+| **merge**     | Overlapping but complementary info       | Synthesize old + new into one entry |
+| **replace**   | Old info is factually wrong/superseded   | Replace content of existing entry   |
+| **deprecate** | Neighbor is outdated by new info         | Mark old as `outdated=true`         |
 
 Two thresholds govern it. Below `@similarity_threshold` (0.8) nothing reaches the
 LLM: the entry is created directly and flagged `curated: false`, which is what
@@ -497,7 +532,7 @@ makes the floor auditable rather than a guess. Above `@duplicate_threshold` (0.9
 a submission carrying no new fact is discarded.
 
 The floor was 0.7 and that was too low to mean anything. Measured over 91 pairs
-of *known-distinct* entries: median similarity 0.738, maximum 0.943, and 73%
+of _known-distinct_ entries: median similarity 0.738, maximum 0.943, and 73%
 cleared 0.70 — so the gate fired on three quarters of all pairs, none of them
 duplicates, and every submission reached the large model. Cosine similarity on
 prose measures topic, and a knowledge base that is all "Elixir debugging
@@ -569,14 +604,14 @@ request budget, reserving time to return results or a progress notice. An outer
 deadline also bounds version lookup and database retrieval. A request queued
 behind another request may still encounter the transport's own timeout.
 
-| Condition | Behaviour |
-| --- | --- |
-| Query embedding fails, times out, or has no API key | Keyword retrieval with a notice |
-| Docs index model differs from query model | Keyword retrieval with a model-mismatch notice |
-| One retrieval arm raises | The other arm still runs; a notice names the failed arm |
-| Healthy arms find no matches | Empty results, with the attempted retrieval mode |
-| Ingestion exceeds its wait budget | Progress notice; ingestion continues |
-| Other foreground work exceeds the request budget | Deadline notice; any supervised ingestion continues |
+| Condition                                           | Behaviour                                               |
+| --------------------------------------------------- | ------------------------------------------------------- |
+| Query embedding fails, times out, or has no API key | Keyword retrieval with a notice                         |
+| Docs index model differs from query model           | Keyword retrieval with a model-mismatch notice          |
+| One retrieval arm raises                            | The other arm still runs; a notice names the failed arm |
+| Healthy arms find no matches                        | Empty results, with the attempted retrieval mode        |
+| Ingestion exceeds its wait budget                   | Progress notice; ingestion continues                    |
+| Other foreground work exceeds the request budget    | Deadline notice; any supervised ingestion continues     |
 
 `retrieval_mode` is `hybrid`, `keyword`, `vector`, or `none`. It describes which
 arms ran successfully, not whether their results were relevant. Notices explain
@@ -661,7 +696,7 @@ search_docs(package: "anubis_mcp",
 ```
 
 Rank 2 is `Anubis.Server.send_elicitation_request/3`, whose docstring happens to
-carry the rule for *all three* server-initiated request kinds:
+carry the rule for _all three_ server-initiated request kinds:
 
 > The client must advertise the `elicitation` capability or the call returns
 > `{:error, :capability_not_supported}` after enqueueing.
@@ -690,7 +725,7 @@ An Anubis session holds one MCP request in flight and queues the rest
 nothing.
 
 It costs something, though: the transport's `GenServer.call(session, …, 30_000)`
-starts its clock when the request is *sent*, not when it is dispatched, so a slow
+starts its clock when the request is _sent_, not when it is dispatched, so a slow
 request burns the budget of everything queued behind it. A 25s ingest leaves a
 queued search roughly 5s before its own transport call times out. This is the
 main reason `INGEST_TIMEOUT_MS` sits below the transport ceiling rather than at
@@ -720,8 +755,8 @@ indexed is downloaded, chunked and embedded first.
 
 `AI_API_URL` addresses both `/embeddings` and `/chat/completions`, which assumes one provider serves both.
 
-A local embedding server does not: it has no chat route, so pointing `AI_API_URL` at it leaves `remember`'s curation calling a URL
-that 404s — and `memory_enabled?/0` only checks that a key and a model name are set, so it attempts the call rather than degrading.
+An embedding-only server has no chat route. Keep memory disabled for search-only
+usage. If enabling `MEMORY_ENABLED=true`, configure a working chat endpoint too.
 `AI_EMBED_URL` and `AI_CHAT_URL` override the shared value independently; both default to it, so a single provider still needs no extra configuration.
 
 [`text-embeddings-inference`](https://huggingface.co/docs/text-embeddings-inference) is in homebrew-core and exposes an OpenAI-compatible `/v1/embeddings`:
@@ -745,18 +780,19 @@ the weights and does a warmup pass, both slow and both one-time.
 
 **`EMBED_BATCH_SIZE` must not exceed TEI's `max_client_batch_size`** (32 by
 default, printed at startup). Oversized batches are rejected, and the automatic
-bisection will not rescue them: `token_overflow?/1` recognises the *provider's*
+bisection will not rescue them: `token_overflow?/1` recognises the _provider's_
 token-limit shape, and a client-batch-size rejection is a different error, so the
 ingest aborts instead of halving. Match the two numbers.
 
 `AI_API_KEY` only has to be non-empty; it is sent as a bearer token the local
-server ignores. Chat keeps going to whatever `AI_API_URL` names, so `remember`
-and `recall` are unaffected.
+server ignores. With memory enabled, chat goes to `AI_CHAT_URL` (or the shared
+provider URL), which must support the configured chat models. `recall` uses the
+embedding endpoint and remains available with memory curation disabled.
 
 Three things to expect:
 
 - **Switching embedders costs a full re-index**, and is refused until you run
-  one. `embedding_config` compares the *model name*, not the dimension, which
+  one. `embedding_config` compares the _model name_, not the dimension, which
   matters here: Qwen3-Embedding-0.6B is 1024-dim exactly like `mistral-embed`, so
   nothing would raise and cosine would simply return noise. `mix docs.reindex` is
   the supported path.
@@ -764,9 +800,9 @@ Three things to expect:
   That is the designed path, not a failure: the payload carries a
   "still being indexed" notice, the job keeps running, and calling `search_docs`
   again attaches to it. Drop `refresh: true` from the retry.
-- **Lower `EMBED_CONCURRENCY`, do not raise it, and do *not* set
+- **Lower `EMBED_CONCURRENCY`, do not raise it, and do _not_ set
   `EMBED_PAUSE_MS` to zero.** Against a hosted provider the work is IO-bound and
-  concurrency hides latency; against a local server the server *is* the
+  concurrency hides latency; against a local server the server _is_ the
   bottleneck, so parallel requests only contend. `1` is the sensible value.
 
   The pause is the subtler one. There is no rate limit to pace against, but TEI
@@ -785,7 +821,7 @@ runs 25-30 minutes. That is a one-off, and it is the ingest side. **A single
 query embedding is ~48ms of inference**, comparable to a round trip to a hosted
 provider — search latency is not the thing to worry about here, contention is.
 
-Whether it is any *good* is measurable rather than arguable, and this is the
+Whether it is any _good_ is measurable rather than arguable, and this is the
 argument for trying it: re-embedding locally is free, so `mix docs.eval` can
 compare embedders the way it compared retrieval strategies. The vector arm carries
 conceptual retrieval (concept recall 0.94 against FTS's 0.88) and concept MRR at
@@ -798,11 +834,11 @@ Any provider exposing OpenAI-compatible `/embeddings` and `/chat/completions`
 works; set `AI_API_URL` and the three model names. Prices drift — treat these as
 a shape, not a quote.
 
-|Model|Mistral / cost|OpenAI /cost|Gemini /cost|
-|--|--|--|--|
-|Embeddings|mistral-embed 0.1 /M|txt-embedding-3-small 0.02 /M|text-embedding-004 0.025 /M|
-|Fast extraction|mistral-small-4 0.15/0.60|GPT-5-nano 0.05,0.40 /M|gemini-2.5-flash-lite 0.10,0.40 /M|
-|Classification|mistral-large-3 0.50/1.50|GPT-5-mini 0.25,2.00 /M|gemini-3.1-flash-lite 0.25,1.50 /M|
+| Model           | Mistral / cost            | OpenAI /cost                  | Gemini /cost                       |
+| --------------- | ------------------------- | ----------------------------- | ---------------------------------- |
+| Embeddings      | mistral-embed 0.1 /M      | txt-embedding-3-small 0.02 /M | text-embedding-004 0.025 /M        |
+| Fast extraction | mistral-small-4 0.15/0.60 | GPT-5-nano 0.05,0.40 /M       | gemini-2.5-flash-lite 0.10,0.40 /M |
+| Classification  | mistral-large-3 0.50/1.50 | GPT-5-mini 0.25,2.00 /M       | gemini-3.1-flash-lite 0.25,1.50 /M |
 
 ## Regression tests
 

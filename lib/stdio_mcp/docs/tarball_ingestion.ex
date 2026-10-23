@@ -1033,7 +1033,7 @@ defmodule StdioMcp.Docs.TarballIngestion do
         |> Map.merge(%{
           package: package,
           version: version,
-          embedding: if(doc.embedding, do: Jason.encode!(doc.embedding)),
+          embedding: if(doc.embedding, do: StdioMcp.Vector.encode!(doc.embedding)),
           inserted_at: now,
           updated_at: now
         })

@@ -11,6 +11,7 @@ defmodule StdioMcp.Memory do
   alias StdioMcp.Knowledge.Schemas
   alias StdioMcp.Knowledge.Vocabulary
   alias StdioMcp.Repo
+  alias StdioMcp.Vector
   require Logger
 
   # Below this, neighbours are not close enough to be worth a curator call.
@@ -338,11 +339,11 @@ defmodule StdioMcp.Memory do
   end
 
   defp vector_ids(base_query, embedding, depth) do
-    query_json = Jason.encode!(embedding)
+    query_vector = Vector.encode!(embedding)
 
     from(k in compatible_vectors(base_query),
       where: not is_nil(k.embedding),
-      order_by: [asc: vec_distance_cosine(k.embedding, ^query_json)],
+      order_by: [asc: vec_distance_cosine(k.embedding, type(^query_vector, :binary))],
       limit: ^depth,
       select: k.id
     )
@@ -404,12 +405,12 @@ defmodule StdioMcp.Memory do
   # Every candidate gets a real cosine distance, including one only the keyword
   # arm found — otherwise the threshold could not be applied to it at all.
   defp with_distance(ids, embedding) do
-    query_json = Jason.encode!(embedding)
+    query_vector = Vector.encode!(embedding)
 
     index =
       from(k in compatible_vectors(Knowledge),
         where: k.id in ^ids,
-        select: {k, vec_distance_cosine(k.embedding, ^query_json)}
+        select: {k, vec_distance_cosine(k.embedding, type(^query_vector, :binary))}
       )
       |> Repo.all()
       |> Map.new(fn {entry, distance} -> {entry.id, Map.put(entry, :distance, distance)} end)
@@ -697,7 +698,7 @@ defmodule StdioMcp.Memory do
     {:ok, entry} =
       save(
         Map.merge(structured, %{
-          embedding: Jason.encode!(embedding),
+          embedding: Vector.encode!(embedding),
           embedding_model: Client.embed_model()
         })
       )
@@ -708,7 +709,7 @@ defmodule StdioMcp.Memory do
   defp execute_decision(%{action: "update", id: id}, structured, embedding) do
     attrs =
       Map.merge(structured, %{
-        embedding: Jason.encode!(embedding),
+        embedding: Vector.encode!(embedding),
         embedding_model: Client.embed_model()
       })
 

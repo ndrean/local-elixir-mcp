@@ -71,7 +71,7 @@ defmodule StdioMcp.Tools.SearchDocs do
     {vector, embedding_notices} =
       case Deadline.run(min(deadline, Deadline.after_ms(2_000)), fn -> Client.embed(query) end) do
         {:ok, {:ok, emb}} ->
-          {Jason.encode!(emb), []}
+          {emb, []}
 
         failure ->
           {nil, ["Query embedding unavailable (#{inspect(failure)}); using keyword retrieval."]}

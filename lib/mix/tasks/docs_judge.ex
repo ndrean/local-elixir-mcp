@@ -59,7 +59,7 @@ defmodule Mix.Tasks.Docs.Judge do
   defp results(q, depth) do
     embedding =
       case Client.embed(q.query) do
-        {:ok, vector} -> Jason.encode!(vector)
+        {:ok, vector} -> vector
         {:error, reason} -> Mix.raise("embedding failed: #{inspect(reason)}")
       end
 

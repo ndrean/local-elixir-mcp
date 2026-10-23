@@ -6,3 +6,4 @@ deps/
 _build/
 .elixir_ls
 scripts/
+*.txt

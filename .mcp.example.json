@@ -1,11 +1,12 @@
 {
-  "_comment": "Copy to .mcp.json in the repo you want to USE the server from (Claude Code, Cursor), or to ~/.gemini/config/mcp_config.json for Antigravity — the same shape works for all of them. Build the server first with 'mix deps.get && MIX_ENV=prod mix release', then edit 'command' and the two values marked <…>. PROJECT_ROOT is the repo you are editing, not the clone; pointing it at the clone answers confidently about the wrong versions. MCP_TRANSPORT is required and has no default. DATABASE_PATH is deliberately absent: it defaults to <clone>/priv/mcp.db, which startup creates and migrates automatically before exposing tools.",
+  "_comment": "Copy to .mcp.json in the repo you want to USE the server from (Claude Code, Cursor), or to ~/.gemini/config/mcp_config.json for Antigravity — the same shape works for all of them. Build the server first with 'mix deps.get && MIX_ENV=prod mix release', then edit 'command', AI_PROVIDER, the API key and PROJECT_ROOT. Models and endpoints come from the preset; memory curation is disabled unless MEMORY_ENABLED=true. Ollama requires no API key. PROJECT_ROOT is the repo you are editing, not the clone; pointing it at the clone answers confidently about the wrong versions. MCP_TRANSPORT is required and has no default. DATABASE_PATH is deliberately absent: it defaults to <clone>/priv/mcp.db, which startup creates and migrates automatically before exposing tools.",
 
   "mcpServers": {
     "hex_local": {
       "command": "<ABSOLUTE/PATH/TO/local_hex_mcp>/_build/prod/rel/stdio_mcp/bin/stdio_mcp",
       "args": ["start"],
       "env": {
+        "AI_PROVIDER": "mistral",
         "AI_API_KEY": "<YOUR-API-KEY>",
         "PROJECT_ROOT": "<ABSOLUTE/PATH/TO/THE/REPO/YOU/ARE/EDITING>",
 

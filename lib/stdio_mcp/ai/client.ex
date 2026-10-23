@@ -29,14 +29,17 @@ defmodule StdioMcp.AI.Client do
     do: Application.get_env(:stdio_mcp, :ai_chat_model_small, "mistral-small-latest")
 
   def large_model,
-    do: Application.get_env(:stdio_mcp, :ai_chat_model_large, "mistral-medium-latest")
+    do: Application.get_env(:stdio_mcp, :ai_chat_model_large, "mistral-large-latest")
 
   def embed_model, do: Application.get_env(:stdio_mcp, :ai_embed_model, "mistral-embed")
 
   @spec memory_enabled?() :: boolean()
   def memory_enabled? do
     key = api_key()
-    is_binary(key) and key != "" and is_binary(small_model()) and small_model() != ""
+
+    Application.get_env(:stdio_mcp, :memory_enabled, false) == true and
+      is_binary(key) and String.trim(key) != "" and
+      Enum.all?([small_model(), large_model()], &(is_binary(&1) and String.trim(&1) != ""))
   end
 
   @typedoc """

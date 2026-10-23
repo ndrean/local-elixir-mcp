@@ -86,6 +86,7 @@ defmodule Mix.Tasks.Docs.Eval do
   alias StdioMcp.Docs.ResultRanking
   alias StdioMcp.PackageDoc
   alias StdioMcp.Repo
+  alias StdioMcp.Vector
 
   @mrr_depth 10
 
@@ -527,16 +528,18 @@ defmodule Mix.Tasks.Docs.Eval do
   end
 
   defp probe_dims do
-    "dimension probe" |> embed!() |> Jason.decode!() |> length()
+    "dimension probe" |> embed!() |> Vector.dimensions()
   end
 
-  # Counting commas beats decoding a 1536-element JSON array just to length it.
+  # sqlite-vec reads the stored BLOB width directly, without decoding JSON.
   defp stored_dims(package) do
     Repo.one(
       from(d in PackageDoc,
-        where: d.package == ^package and not is_nil(d.embedding) and d.embedding != "",
+        where:
+          d.package == ^package and not is_nil(d.embedding) and
+            fragment("length(?) > 0", d.embedding),
         limit: 1,
-        select: fragment("length(?) - length(replace(?, ',', '')) + 1", d.embedding, d.embedding)
+        select: vec_length(d.embedding)
       )
     )
   end
@@ -622,7 +625,7 @@ defmodule Mix.Tasks.Docs.Eval do
   defp embed!(query, attempt \\ 1) do
     case Client.embed(query) do
       {:ok, embedding} ->
-        Jason.encode!(embedding)
+        Vector.encode!(embedding)
 
       {:error, {429, retry_after_ms}} when attempt < @embed_attempts ->
         delay = backoff(retry_after_ms, attempt)
@@ -693,8 +696,10 @@ defmodule Mix.Tasks.Docs.Eval do
 
   defp vector_ids(package, vec, n) do
     from(d in PackageDoc,
-      where: d.package == ^package and not is_nil(d.embedding) and d.embedding != "",
-      order_by: [asc: vec_distance_cosine(d.embedding, ^vec)],
+      where:
+        d.package == ^package and not is_nil(d.embedding) and
+          fragment("length(?) > 0", d.embedding),
+      order_by: [asc: vec_distance_cosine(d.embedding, type(^vec, :binary))],
       limit: ^n,
       select: d.id
     )

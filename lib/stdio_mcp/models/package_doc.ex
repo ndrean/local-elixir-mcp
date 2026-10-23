@@ -5,8 +5,8 @@ defmodule StdioMcp.PackageDoc do
   @typedoc """
   One indexed documentation chunk.
 
-  `embedding` is a JSON array as text rather than a float list: sqlite-vec reads
-  either a BLOB or JSON, and `vec_distance_cosine/2` parses it per query.
+  `embedding` is a packed little-endian float32 BLOB. Lists and legacy JSON
+  inputs are converted at the boundary, keeping cosine scans free of JSON parsing.
 
   `source_url` is `nil` for guides and for packages whose docs config sets no
   source URL — see `StdioMcp.Docs.TarballIngestion.source_index/1`.
@@ -22,7 +22,7 @@ defmodule StdioMcp.PackageDoc do
           code_snippet: String.t() | nil,
           hexdocs_url: String.t() | nil,
           source_url: String.t() | nil,
-          embedding: String.t() | nil
+          embedding: binary() | nil
         }
 
   schema "package_docs" do
@@ -36,7 +36,7 @@ defmodule StdioMcp.PackageDoc do
     field(:code_snippet, :string)
     field(:hexdocs_url, :string)
     field(:source_url, :string)
-    field(:embedding, :string)
+    field(:embedding, StdioMcp.Vector)
 
     timestamps()
   end

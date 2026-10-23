@@ -10,7 +10,7 @@ defmodule StdioMcp.Knowledge do
     field(:content, :string)
     field(:outdated, :boolean, default: false)
     field(:metadata, :map, default: %{})
-    field(:embedding, :string)
+    field(:embedding, StdioMcp.Vector)
     field(:embedding_model, :string)
 
     timestamps()

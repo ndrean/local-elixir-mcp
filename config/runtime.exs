@@ -28,29 +28,64 @@ for {legacy, canonical} <- [
   IO.puts(:stderr, "[config] #{legacy} is no longer read — rename it to #{canonical}")
 end
 
-# One provider serving both endpoints is the common case, so `AI_API_URL` stays
-# the single knob and the two specific ones fall back to it. They exist because
-# the endpoints are not always the same service: a local embedding server
-# (`text-embeddings-inference`, llama.cpp, Ollama) speaks `/embeddings` and has
-# no `/chat/completions` at all, so pointing `AI_API_URL` at it would leave
-# `remember`'s curation calling a route that 404s — and `memory_enabled?/0` only
-# checks that a key and a model name are set, so it would attempt the call rather
-# than degrade.
-#
-# Bound to a local variable rather than read back with `Application.get_env/2`:
-# in a release this file runs as a config provider, where `config` writes to an
-# accumulator applied only after the whole file finishes, so reading it back
-# returns the compile-time value.
-api_url = System.get_env("AI_API_URL", "https://api.mistral.ai/v1")
+# Resolve presets here so source runs and releases use exactly the same values.
+# Explicit endpoint/model settings retain precedence for existing installations.
+presets = %{
+  "mistral" => %{
+    url: "https://api.mistral.ai/v1",
+    embed: "mistral-embed",
+    small: "mistral-small-latest",
+    large: "mistral-large-latest",
+    batch_size: 200,
+    concurrency: 2,
+    pause_ms: 0
+  },
+  "openai" => %{
+    url: "https://api.openai.com/v1",
+    embed: "text-embedding-3-small",
+    small: "gpt-4o-mini",
+    large: "gpt-4o-mini",
+    batch_size: 200,
+    concurrency: 2,
+    pause_ms: 0
+  },
+  "ollama" => %{
+    url: "http://localhost:11434/v1",
+    embed: "embeddinggemma",
+    small: "llama3.2",
+    large: "llama3.2",
+    batch_size: 8,
+    concurrency: 1,
+    pause_ms: 200
+  }
+}
+
+provider = System.get_env("AI_PROVIDER", "mistral") |> String.trim() |> String.downcase()
+
+preset =
+  Map.get(presets, provider) ||
+    raise ArgumentError,
+          "Unknown AI_PROVIDER #{inspect(provider)}; use mistral, openai, or ollama"
+
+memory_enabled =
+  case System.get_env("MEMORY_ENABLED", "false") |> String.trim() |> String.downcase() do
+    value when value in ["true", "1"] -> true
+    value when value in ["false", "0"] -> false
+    value -> raise ArgumentError, "Invalid MEMORY_ENABLED #{inspect(value)}; use true or false"
+  end
+
+api_url = System.get_env("AI_API_URL", preset.url)
 
 config :stdio_mcp,
+  ai_provider: provider,
+  memory_enabled: memory_enabled,
   ai_api_url: api_url,
   ai_embed_url: System.get_env("AI_EMBED_URL", api_url),
   ai_chat_url: System.get_env("AI_CHAT_URL", api_url),
-  ai_api_key: System.get_env("AI_API_KEY"),
-  ai_embed_model: System.get_env("AI_EMBED_MODEL", "mistral-embed"),
-  ai_chat_model_small: System.get_env("AI_CHAT_MODEL_SMALL", "mistral-small-latest"),
-  ai_chat_model_large: System.get_env("AI_CHAT_MODEL_LARGE", "mistral-large-latest"),
+  ai_api_key: System.get_env("AI_API_KEY", if(provider == "ollama", do: "ollama")),
+  ai_embed_model: System.get_env("AI_EMBED_MODEL", preset.embed),
+  ai_chat_model_small: System.get_env("AI_CHAT_MODEL_SMALL", preset.small),
+  ai_chat_model_large: System.get_env("AI_CHAT_MODEL_LARGE", preset.large),
   github_api_url: System.get_env("GITHUB_API_URL", "https://api.github.com"),
   github_token: System.get_env("GITHUB_TOKEN"),
   hex_api_url: System.get_env("HEX_API_URL", "https://hex.pm/api")
@@ -65,7 +100,7 @@ config :stdio_mcp,
 env_int = fn name, default ->
   with value when is_binary(value) <- System.get_env(name),
        {parsed, ""} <- Integer.parse(String.trim(value)),
-       true <- parsed > 0 do
+       true <- parsed > 0 or (name == "EMBED_PAUSE_MS" and parsed == 0) do
     parsed
   else
     _ -> default
@@ -80,15 +115,14 @@ config :stdio_mcp,
   # Inputs per embeddings request. Mistral rate-limits on requests_per_second,
   # so a bigger batch is the strongest lever against 429s; bounded above by the
   # model's context length.
-  embed_batch_size: env_int.("EMBED_BATCH_SIZE", 200),
+  embed_batch_size: env_int.("EMBED_BATCH_SIZE", preset.batch_size),
   # Concurrent embedding requests. Bounded by the Finch pool (size 10) and the
   # provider's rate limit — not by CPU count.
-  embed_concurrency: env_int.("EMBED_CONCURRENCY", 2),
+  embed_concurrency: env_int.("EMBED_CONCURRENCY", preset.concurrency),
   # Pause after each embedding request, for providers that limit
-  # requests-per-second. 0 (the default) means no pacing at all, which is what a
-  # capable endpoint wants; raise it only if 429s persist after lowering
-  # concurrency.
-  embed_pause_ms: env_int.("EMBED_PAUSE_MS", 0)
+  # requests-per-second. 0 disables pacing; hosted presets default to 0 and
+  # Ollama to 200 ms. Raise it if 429s persist after lowering concurrency.
+  embed_pause_ms: env_int.("EMBED_PAUSE_MS", preset.pause_ms)
 
 repo_overrides =
   [load_extensions: [SqliteVec.path()]] ++
