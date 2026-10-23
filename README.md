@@ -1,5 +1,8 @@
 # Local Stdio MCP Server
 
+<p align="center"><img width="512" height="512" alt="hex-local-mcp" src="https://github.com/user-attachments/assets/b86039be-d926-4456-944c-63437ad4e3ec" /></p>
+
+
 A lightweight Elixir MCP server designed to run over `stdio` with a local SQLite database and an `AI_API_KEY`. It localises a search in the HexDocs of your favorite libraries.
 
 ## Tools
