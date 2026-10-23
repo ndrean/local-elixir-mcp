@@ -53,15 +53,16 @@ which release includes it before saying the installed version is fixed.
 
 ## Remember only actionable, confirmed lessons
 
-After fixing the problem, consider `remember` when at least one applies:
+After fixing the problem, use `remember` when at least one condition applies:
 
 - The solution required two or more failed attempts.
 - The cause involved interactions between layers, such as proxy and application
   transport, container networking and database, or release configuration and runtime.
 - A dependency had an undocumented behavior or version constraint.
 
-Skip routine one-step corrections. Capture the symptom, actual cause, affected
-package/version, fix, and evidence or verification that made the conclusion useful.
+Skip routine one-step corrections without a cross-layer cause or dependency
+quirk. Capture the symptom, actual cause, affected package/version, fix, and evidence
+or verification that made the conclusion useful.
 Exclude credentials and unrelated personal data. Keep observed facts distinct
 from hypotheses. Do not save raw logs when a short explanation is sufficient.
 

@@ -52,6 +52,13 @@ Use an exact identifier for a symbol lookup, or a concise description using the
 package's vocabulary for a conceptual question. Public docs can describe functions
 created by macros: an empty source search does not prove a public API is absent.
 
+For prose queries, heading-only entries, title restatements, and bare typespecs
+receive 40% of their RRF score before the final ten results are selected;
+explanations and examples keep their full score. Identifier-only queries retain
+ordinary RRF ordering. Use a bare exact identifier when looking up a generated
+function whose stub may rank lower for a prose query. All entries remain indexed;
+there is no learned reranker.
+
 ```text
 search_docs(package: "req", query: "Req.merge/2")
 search_docs(package: "text_chunker", query: "chunk overlap preserve context")
@@ -98,9 +105,11 @@ Include the **returned package version** with each documentation-based conclusio
 Link only exact returned `hexdocs_url` or `source_url` values, or URLs independently
 verified; never synthesize HexDocs or source links. Source links may be absent.
 
-`module`, `function`, and `type` identify API documentation; `extras` identifies
-handwritten guides. Check important defaults and version-sensitive claims against
-the matching API or source. Documentation describes intended behavior; it does
+API documentation includes `module`, `function`, `macro`, `callback`, `type`,
+`opaque`, and other API row kinds; `extras` identifies handwritten guides. A
+documented generated function can have only a heading, which identifies the API
+without explaining its behavior. Check important defaults and version-sensitive
+claims against the matching API or source. Documentation describes intended behavior; it does
 not establish transport, concurrency or deployment behavior. When observed behavior
 differs, investigate source and upstream issues rather than extrapolating from a
 docstring. State when the available evidence does not answer the question.
